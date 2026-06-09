@@ -88,7 +88,6 @@ Discovery / dashboard:
   thread/loaded/list
   thread/list
   thread/read
-  thread/turns/list
 Live updates:
   thread/resume
   thread/unsubscribe
@@ -112,7 +111,7 @@ item/completed
 item/agentMessage/delta
 serverRequest/resolved
 
-OpenAI documents the initialize handshake, thread APIs, turn APIs, loaded-thread listing, status notifications, turn/start, and turn/steer; thread/turns/list pages turn history with itemsView so the watch can fetch only a latest summary instead of full history.
+OpenAI documents the initialize handshake, thread APIs, turn APIs, loaded-thread listing, status notifications, turn/start, and turn/steer. Older protocol plans used thread/turns/list to page turn history with itemsView, but the generated local schema for this implementation does not expose that method.
 
 6. WebSocket handshake
 
@@ -155,10 +154,9 @@ Initial sync:
        "exec", "subAgent", "subAgentReview",
        "subAgentThreadSpawn", "unknown"
      ]
-7. for candidate threads, call thread/turns/list:
-     limit: 1
-     sortDirection: "desc"
-     itemsView: "summary"
+7. for candidate threads, call thread/read:
+     includeTurns: true
+   then derive the latest turn locally
 8. filter to visible jobs
 9. cache result
 
@@ -273,7 +271,7 @@ Send logic:
 
 Before send:
   refresh thread via thread/read
-  fetch latest turn via thread/turns/list limit:1
+  derive latest turn from the refreshed thread's turns array
 If latest turn status is "inProgress" and thread status is active:
   call turn/steer with expectedTurnId = latestTurn.id
 Else:
