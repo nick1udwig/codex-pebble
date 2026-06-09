@@ -53,6 +53,9 @@ npm run test:pre-release
 
 Use `npm run dev:config` to serve the config page at `http://127.0.0.1:4173`.
 
+If a local Codex app-server is already running, `npm run smoke:app-server`
+performs a read-only JSON-RPC smoke test against the default Unix socket.
+
 ## Deployment
 
 - `.github/workflows/pages.yml` builds `docs/config` from `src/config` and deploys GitHub Pages.

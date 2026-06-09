@@ -16,6 +16,7 @@
     "test:config": "bash scripts/test-config.sh",
     "test:build": "bash scripts/test-build.sh",
     "test:pre-release": "bash scripts/test-pre-release.sh",
+    "smoke:app-server": "node scripts/smoke-app-server.mjs",
     "dev:config": "node scripts/serve-config-page.mjs --port 4173",
     "build:config:docs": "node scripts/build-config-docs.mjs",
     "build:watch": "pebble build",
