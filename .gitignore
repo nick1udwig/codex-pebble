@@ -1,0 +1,6 @@
+build/
+node_modules/
+.lock-waf_*
+coverage/
+playwright-report/
+test-results/

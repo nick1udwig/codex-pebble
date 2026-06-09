@@ -1,0 +1,58 @@
+{
+  "name": "codex-jobs",
+  "author": "Nick",
+  "version": "0.1.0",
+  "description": "RePebble Alloy watch app for Codex app-server jobs over WebSocket JSON-RPC.",
+  "keywords": [
+    "pebble-app",
+    "repebble",
+    "alloy",
+    "codex"
+  ],
+  "private": true,
+  "scripts": {
+    "test": "npm run test:js && npm run test:config",
+    "test:js": "bash scripts/test-js.sh",
+    "test:config": "bash scripts/test-config.sh",
+    "test:build": "bash scripts/test-build.sh",
+    "test:pre-release": "bash scripts/test-pre-release.sh",
+    "dev:config": "node scripts/serve-config-page.mjs --port 4173",
+    "build:config:docs": "node scripts/build-config-docs.mjs",
+    "build:watch": "pebble build",
+    "build:watch:release": "npm run build:watch && node scripts/build-release-pbw.mjs",
+    "schemas:ts": "codex app-server generate-ts --out ./schemas",
+    "schemas:json": "codex app-server generate-json-schema --out ./schemas"
+  },
+  "dependencies": {
+    "@moddable/pebbleproxy": "^0.1.8"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.53.0",
+    "esbuild": "^0.25.11",
+    "vitest": "^3.2.4"
+  },
+  "pebble": {
+    "displayName": "Codex Jobs",
+    "uuid": "e1a19869-91bd-42c4-ab84-6301e44e25c7",
+    "projectType": "moddable",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": [
+      "emery",
+      "gabbro"
+    ],
+    "capabilities": [
+      "configurable"
+    ],
+    "watchapp": {
+      "watchface": false
+    },
+    "messageKeys": [
+      "Config",
+      "ConfigRequest"
+    ],
+    "resources": {
+      "media": []
+    }
+  }
+}
