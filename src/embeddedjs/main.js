@@ -1,12 +1,17 @@
 import Poco from "commodetto/Poco";
 import Button from "pebble/button";
 import Message from "pebble/message";
-import CodexRpcClient from "./codex_rpc";
-import VoiceReply from "./dictation";
-import { drawDashboard } from "./views/dashboard";
-import { drawDetail, drawDictation } from "./views/detail";
-import { drawConnecting, drawSettingsNeeded } from "./views/settings_needed";
-import {
+import CodexRpcClient from "codex_rpc";
+import VoiceReply from "dictation";
+import dashboardView from "dashboard";
+import detailView from "detail";
+import settingsViews from "settings_needed";
+import jobsModel from "jobs";
+
+const { drawDashboard } = dashboardView;
+const { drawDetail, drawDictation } = detailView;
+const { drawConnecting, drawSettingsNeeded } = settingsViews;
+const {
     SOURCE_KINDS,
     acknowledgeJob,
     buildVisibleJobs,
@@ -25,7 +30,7 @@ import {
     saveAppState,
     saveCachedDashboard,
     saveSettings
-} from "./jobs";
+} = jobsModel;
 
 const render = new Poco(screen);
 const fonts = {
@@ -63,7 +68,7 @@ const voiceReply = new VoiceReply({
         redraw();
     },
     onError(error) {
-        replyError = "Dictation canceled";
+        replyError = error ? String(error) : "Dictation canceled";
         errorMessage = error ? String(error) : "";
         mode = "detail";
         redraw();

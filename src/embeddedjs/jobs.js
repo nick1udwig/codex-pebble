@@ -375,3 +375,26 @@ function writeJson(key, value) {
         console.log("Storage write failed: " + error.message);
     }
 }
+
+export default {
+    DEFAULT_SETTINGS,
+    SOURCE_KINDS,
+    acknowledgeJob,
+    buildVisibleJobs,
+    getLatestTurnFromThread,
+    getThreadId,
+    getThreadStatusType,
+    getTurnId,
+    getTurnStatus,
+    hasWaitingOnApproval,
+    isTerminalJob,
+    loadAppState,
+    loadCachedDashboard,
+    loadSettings,
+    mergeSettings,
+    normalizeAppState,
+    nowUnix,
+    saveAppState,
+    saveCachedDashboard,
+    saveSettings
+};

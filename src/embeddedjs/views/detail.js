@@ -117,3 +117,8 @@ function makePalette(render) {
         red: render.makeColor(180, 0, 0)
     };
 }
+
+export default {
+    drawDetail,
+    drawDictation
+};

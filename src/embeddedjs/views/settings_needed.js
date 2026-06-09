@@ -48,3 +48,8 @@ function fit(render, text, font, maxWidth) {
         value = value.slice(0, -1);
     return value + "...";
 }
+
+export default {
+    drawConnecting,
+    drawSettingsNeeded
+};

@@ -214,7 +214,7 @@ describe("watch runtime", () => {
     expect(rpc.closed).toBe(true);
   });
 
-  it("previews accepted dictation and steers an active turn", async () => {
+  it("reports voice reply as unavailable in the Moddable watch runtime", async () => {
     const current = now();
     await boot({
       settings: settings(),
@@ -226,130 +226,14 @@ describe("watch runtime", () => {
         loadedIds: ["thr_active"],
       }),
     });
-    const rpc = await waitForRequest("thread/resume");
-
-    buttonInstances[0].push("select");
-    buttonInstances[0].push("select");
-    expect(dictationInstances[0].started).toBe(1);
-
-    dictationInstances[0].emitText("Please continue");
-    expect(renderText()).toContain("Please continue");
-
-    buttonInstances[0].push("select");
-    await waitForRequest("turn/steer");
-
-    const steer = rpc.requests.find(item => item.method === "turn/steer");
-    expect(steer.params).toEqual({
-      threadId: "thr_active",
-      expectedTurnId: "turn_active",
-      input: [{ type: "text", text: "Please continue", text_elements: [] }],
-    });
-  });
-
-  it("offers to start a new turn when active-turn steering is stale", async () => {
-    const current = now();
-    const threads = {
-      thr_active: thread("thr_active", "Fix deploy script", "active", current, [
-        turn("turn_active", "inProgress", current, "editing CI"),
-      ]),
-    };
-    await boot({
-      settings: settings(),
-      rpcHandlers: {
-        ...threadHandlers(threads, {
-          loadedIds: ["thr_active"],
-        }),
-        "turn/steer": () => {
-          threads.thr_active = thread("thr_active", "Fix deploy script", "idle", current + 1, [
-            turn("turn_active", "completed", current + 1, "done"),
-          ]);
-          throw new Error("No active turn");
-        },
-      },
-    });
-    const rpc = await waitForRequest("thread/resume");
-
-    buttonInstances[0].push("select");
-    buttonInstances[0].push("select");
-    dictationInstances[0].emitText("Please continue");
-    buttonInstances[0].push("select");
-
-    await vi.waitFor(() => {
-      expect(renderText()).toContain("No active turn.");
-    });
-    expect(rpc.requests.some(item => item.method === "turn/start")).toBe(false);
-
-    buttonInstances[0].push("select");
-    await waitForRequest("turn/start");
-
-    const start = rpc.requests.find(item => item.method === "turn/start");
-    expect(start.params).toEqual({
-      threadId: "thr_active",
-      input: [{ type: "text", text: "Please continue", text_elements: [] }],
-    });
-  });
-
-  it("starts a new turn for idle threads", async () => {
-    const current = now();
-    await boot({
-      settings: settings(),
-      rpcHandlers: threadHandlers({
-        thr_done: thread("thr_done", "Review tests", "idle", current, [
-          turn("turn_done", "completed", current, "done"),
-        ]),
-      }, {
-        listedIds: ["thr_done"],
-      }),
-    });
-    const rpc = await waitForRequest("thread/list");
-    await vi.waitFor(() => {
-      expect(JSON.parse(globalThis.localStorage.getItem("codexJobsDashboard")).jobs).toHaveLength(1);
-    });
-
-    buttonInstances[0].push("select");
-    buttonInstances[0].push("select");
-    dictationInstances[0].emitText("Follow up");
-    buttonInstances[0].push("select");
-    await waitForRequest("turn/start");
-
-    const resumeIndex = rpc.requests.findIndex(item => item.method === "thread/resume" && item.params.threadId === "thr_done");
-    const startIndex = rpc.requests.findIndex(item => item.method === "turn/start");
-    expect(resumeIndex).toBeGreaterThan(-1);
-    expect(startIndex).toBeGreaterThan(resumeIndex);
-    expect(rpc.requests[startIndex].params).toEqual({
-      threadId: "thr_done",
-      input: [{ type: "text", text: "Follow up", text_elements: [] }],
-    });
-  });
-
-  it("keeps dictated text available when sending fails", async () => {
-    const current = now();
-    await boot({
-      settings: settings(),
-      rpcHandlers: {
-        ...threadHandlers({
-          thr_active: thread("thr_active", "Fix deploy script", "active", current, [
-            turn("turn_active", "inProgress", current, "editing CI"),
-          ]),
-        }, {
-          loadedIds: ["thr_active"],
-        }),
-        "turn/steer": () => {
-          throw new Error("steer failed");
-        },
-      },
-    });
     await waitForRequest("thread/resume");
 
     buttonInstances[0].push("select");
     buttonInstances[0].push("select");
-    dictationInstances[0].emitText("Keep this reply");
-    buttonInstances[0].push("select");
-
     await vi.waitFor(() => {
-      expect(renderText()).toContain("steer failed");
+      expect(renderText()).toContain("Voice reply unavail");
     });
-    expect(renderText()).toContain("Keep this reply");
+    expect(dictationInstances).toHaveLength(0);
   });
 });
 
@@ -384,7 +268,7 @@ async function boot(options = {}) {
     codexJobsDashboard: options.dashboard ? JSON.stringify(options.dashboard) : undefined,
   });
 
-  vi.doMock("../../../src/embeddedjs/codex_rpc.js", () => ({ default: FakeRpcClient }));
+  vi.doMock("codex_rpc", () => ({ default: FakeRpcClient }));
   await import("../../../src/embeddedjs/main.js");
 
   activeHarness = { events, watchListeners };
