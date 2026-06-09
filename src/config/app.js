@@ -56,6 +56,18 @@ function getBridge() {
     return globalThis.PebbleConfigBridge;
   }
 
+  const returnTo = getReturnToUrl();
+  if (returnTo) {
+    return {
+      submit(payload) {
+        try {
+          globalThis.location.href = appendClosePayload(returnTo, payload);
+        } catch (_error) {
+        }
+      },
+    };
+  }
+
   return {
     submit(payload) {
       try {
@@ -64,6 +76,19 @@ function getBridge() {
       }
     },
   };
+}
+
+function getReturnToUrl(search = globalThis.location?.search ?? "") {
+  try {
+    return new URLSearchParams(search).get("return_to") || "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function appendClosePayload(returnTo, payload) {
+  const separator = returnTo.includes("?") ? "" : "?";
+  return returnTo + separator + encodeURIComponent(JSON.stringify(payload));
 }
 
 function readFormSettings() {
