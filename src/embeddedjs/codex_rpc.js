@@ -10,7 +10,6 @@ const ALLOWED_METHODS = new Set([
     "thread/loaded/list",
     "thread/list",
     "thread/read",
-    "thread/turns/list",
     "thread/resume",
     "thread/unsubscribe",
     "turn/steer",

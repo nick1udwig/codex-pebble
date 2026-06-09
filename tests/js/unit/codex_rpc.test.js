@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import CodexRpcClient from "../../../src/embeddedjs/codex_rpc.js";
 
@@ -45,6 +46,36 @@ describe("CodexRpcClient", () => {
     expect(() => client.request("thread/archive", {})).toThrow(
       "Forbidden Codex app-server method: thread/archive",
     );
+  });
+
+  it("does not allow the removed thread/turns/list method", () => {
+    const client = new CodexRpcClient("ws://codex.tailnet:4500");
+
+    expect(() => client.request("thread/turns/list", {})).toThrow(
+      "Forbidden Codex app-server method: thread/turns/list",
+    );
+  });
+
+  it("tracks generated Codex app-server method names", () => {
+    const clientRequests = readFileSync(new URL("../../../schemas/ClientRequest.ts", import.meta.url), "utf8");
+    const clientNotifications = readFileSync(new URL("../../../schemas/ClientNotification.ts", import.meta.url), "utf8");
+    const allowedRequests = [
+      "initialize",
+      "thread/loaded/list",
+      "thread/list",
+      "thread/read",
+      "thread/resume",
+      "thread/unsubscribe",
+      "turn/steer",
+      "turn/start",
+      "account/read",
+      "turn/interrupt",
+    ];
+
+    for (const method of allowedRequests)
+      expect(clientRequests).toContain(`"method": "${method}"`);
+    expect(clientNotifications).toContain(`"method": "initialized"`);
+    expect(clientRequests).not.toContain(`"method": "thread/turns/list"`);
   });
 });
 

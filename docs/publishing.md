@@ -30,6 +30,19 @@ The release script minifies `pebble-js-app.js`, removes the source map from the 
 build/codex-pebble-release.pbw
 ```
 
+## Codex Schemas
+
+Refresh generated app-server contracts when updating the Codex version used for
+the watch app:
+
+```sh
+npm run schemas:json
+npm run schemas:ts
+```
+
+The JS tests assert that the watch client's RPC allowlist matches those
+generated contracts.
+
 ## GitHub Actions
 
 - `.github/workflows/pages.yml` deploys `docs/` through GitHub Pages.

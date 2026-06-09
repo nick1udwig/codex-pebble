@@ -175,6 +175,18 @@ export function getTurnStatus(turn) {
     return null;
 }
 
+export function getLatestTurnFromThread(thread) {
+    const turns = thread && Array.isArray(thread.turns) ? thread.turns : [];
+    if (!turns.length)
+        return null;
+
+    return turns.reduce((latest, turn) => {
+        if (!latest)
+            return turn;
+        return getTurnUpdatedAt(turn) >= getTurnUpdatedAt(latest) ? turn : latest;
+    }, null);
+}
+
 export function getThreadUpdatedAt(thread) {
     if (!thread)
         return 0;
@@ -184,7 +196,7 @@ export function getThreadUpdatedAt(thread) {
 export function getTurnUpdatedAt(turn) {
     if (!turn)
         return 0;
-    return asUnix(turn.updatedAt || turn.updated_at || turn.completedAt || turn.completed_at || turn.createdAt || turn.created_at);
+    return asUnix(turn.updatedAt || turn.updated_at || turn.completedAt || turn.completed_at || turn.startedAt || turn.started_at || turn.createdAt || turn.created_at);
 }
 
 export function getJobTitle(thread) {

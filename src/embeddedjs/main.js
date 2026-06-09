@@ -10,6 +10,7 @@ import {
     SOURCE_KINDS,
     acknowledgeJob,
     buildVisibleJobs,
+    getLatestTurnFromThread,
     getThreadId,
     getThreadStatusType,
     getTurnId,
@@ -216,9 +217,7 @@ async function syncDashboard() {
     const entries = [];
     const threads = Array.from(byId.values()).slice(0, 25);
     for (const thread of threads) {
-        const threadId = getThreadId(thread);
-        const latestTurn = await fetchLatestTurn(threadId);
-        entries.push({ thread, latestTurn });
+        entries.push(await fetchThreadSummary(thread));
     }
 
     const result = buildVisibleJobs(entries, appState, settings, nowUnix());
@@ -263,18 +262,20 @@ async function fetchListedThreads() {
     return result.data || result.threads || [];
 }
 
-async function fetchLatestTurn(threadId) {
+async function fetchThreadSummary(thread) {
+    const threadId = getThreadId(thread);
     if (!threadId)
-        return null;
+        return { thread, latestTurn: null };
 
-    const result = await rpc.request("thread/turns/list", {
+    const result = await rpc.request("thread/read", {
         threadId,
-        limit: 1,
-        sortDirection: "desc",
-        itemsView: "summary"
+        includeTurns: true
     });
-    const turns = result.data || result.turns || [];
-    return turns.length ? turns[0] : null;
+    const hydratedThread = result.thread || result;
+    return {
+        thread: hydratedThread || thread,
+        latestTurn: getLatestTurnFromThread(hydratedThread)
+    };
 }
 
 async function updateSubscriptions() {
@@ -469,9 +470,9 @@ async function sendReply() {
     redraw();
 
     try {
-        const read = await rpc.request("thread/read", { threadId: job.id, includeTurns: false });
+        const read = await rpc.request("thread/read", { threadId: job.id, includeTurns: true });
         const thread = read.thread || read;
-        const latestTurn = await fetchLatestTurn(job.id);
+        const latestTurn = getLatestTurnFromThread(thread);
         const latestStatus = getTurnStatus(latestTurn);
         const activeThread = getThreadStatusType(thread) === "active";
         const input = [{ type: "text", text: replyText }];

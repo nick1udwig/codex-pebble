@@ -162,6 +162,13 @@ Initial sync:
 8. filter to visible jobs
 9. cache result
 
+Current generated schema note: the local Codex app-server contracts generated
+with `codex app-server generate-ts` and `generate-json-schema` do not expose
+`thread/turns/list`. This implementation therefore hydrates each candidate with
+`thread/read` and `includeTurns:true`, then derives the latest turn locally. If a
+future generated schema reintroduces `thread/turns/list`, prefer the paged
+latest-turn request again to avoid reading full turn history.
+
 thread/list supports pagination, sortKey, sourceKinds, archived, cwd, and searchTerm; returned thread objects include runtime status. Source kinds include cli, vscode, exec, appServer, sub-agent variants, and unknown.
 
 Visible job rules:
@@ -423,3 +430,6 @@ codex app-server generate-ts --out ./schemas
 codex app-server generate-json-schema --out ./schemas
 
 OpenAI documents these generators and notes the output matches the Codex version being run.
+The generated files should be committed with this repo so tests can detect when
+the watch client's method allowlist or request parameters drift from the Codex
+version used to build the app.

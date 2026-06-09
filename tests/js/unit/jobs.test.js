@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   acknowledgeJob,
   buildVisibleJobs,
+  getLatestTurnFromThread,
   isTerminalJob,
 } from "../../../src/embeddedjs/jobs.js";
 
@@ -99,6 +100,18 @@ describe("job visibility", () => {
 
     expect(result.jobs.map(job => job.id)).toEqual(["thr_approval", "thr_running"]);
     expect(result.jobs[0].waitingOnApproval).toBe(true);
+  });
+
+  it("extracts the latest turn from hydrated thread/read responses", () => {
+    const latest = getLatestTurnFromThread({
+      turns: [
+        { id: "turn_old", status: "completed", completedAt: 100 },
+        { id: "turn_active", status: "inProgress", startedAt: 250 },
+        { id: "turn_mid", status: "completed", completedAt: 200 },
+      ],
+    });
+
+    expect(latest.id).toBe("turn_active");
   });
 });
 

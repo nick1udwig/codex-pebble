@@ -69,3 +69,5 @@ Generate schemas from the Codex version you run:
 npm run schemas:ts
 npm run schemas:json
 ```
+
+The checked-in `schemas/` directory was generated from the local Codex install and is used by unit tests to catch protocol drift. This schema version does not expose `thread/turns/list`, so the watch client reads `thread/read` with `includeTurns:true` and derives the latest turn locally.
