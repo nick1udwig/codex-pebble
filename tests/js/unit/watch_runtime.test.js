@@ -59,6 +59,17 @@ describe("watch runtime", () => {
     expect(JSON.parse(globalThis.localStorage.getItem("codexJobsDashboard")).stale).toBe(true);
   });
 
+  it("maps raw websocket failures to the Tailnet reachability message", async () => {
+    await boot({
+      settings: settings(),
+      connectError: new Error("WebSocket error"),
+    });
+
+    await vi.waitFor(() => {
+      expect(renderText()).toContain("Cannot reach Codex");
+    });
+  });
+
   it("syncs visible jobs and subscribes active threads", async () => {
     const current = now();
     await boot({
@@ -158,6 +169,46 @@ describe("watch runtime", () => {
     expect(JSON.parse(globalThis.localStorage.getItem("codexJobsDashboard")).jobs[0].kind).toBe("completed");
     expect(renderText()).toContain("Done");
 
+    rpc.hooks.onNotify("item/started", {
+      threadId: "thr_active",
+      turnId: "turn_active",
+      startedAtMs: Date.now(),
+      item: {
+        type: "commandExecution",
+        id: "cmd_1",
+        command: "npm test",
+        cwd: "/repo/thr_active",
+        processId: null,
+        source: "exec",
+        status: "inProgress",
+        commandActions: [],
+        aggregatedOutput: null,
+        exitCode: null,
+        durationMs: null,
+      },
+    });
+    expect(JSON.parse(globalThis.localStorage.getItem("codexJobsDashboard")).jobs[0].progress).toBe("Running: npm test");
+
+    rpc.hooks.onNotify("item/completed", {
+      threadId: "thr_active",
+      turnId: "turn_active",
+      completedAtMs: Date.now(),
+      item: {
+        type: "commandExecution",
+        id: "cmd_1",
+        command: "npm test",
+        cwd: "/repo/thr_active",
+        processId: null,
+        source: "exec",
+        status: "completed",
+        commandActions: [],
+        aggregatedOutput: "ok",
+        exitCode: 0,
+        durationMs: 100,
+      },
+    });
+    expect(JSON.parse(globalThis.localStorage.getItem("codexJobsDashboard")).jobs[0].progress).toBe("Finished: npm test");
+
     activeHarness.events.beforeunload();
     expect(rpc.requests.some(item => item.method === "thread/unsubscribe" && item.params.threadId === "thr_active")).toBe(true);
     expect(rpc.closed).toBe(true);
@@ -191,7 +242,50 @@ describe("watch runtime", () => {
     expect(steer.params).toEqual({
       threadId: "thr_active",
       expectedTurnId: "turn_active",
-      input: [{ type: "text", text: "Please continue" }],
+      input: [{ type: "text", text: "Please continue", text_elements: [] }],
+    });
+  });
+
+  it("offers to start a new turn when active-turn steering is stale", async () => {
+    const current = now();
+    const threads = {
+      thr_active: thread("thr_active", "Fix deploy script", "active", current, [
+        turn("turn_active", "inProgress", current, "editing CI"),
+      ]),
+    };
+    await boot({
+      settings: settings(),
+      rpcHandlers: {
+        ...threadHandlers(threads, {
+          loadedIds: ["thr_active"],
+        }),
+        "turn/steer": () => {
+          threads.thr_active = thread("thr_active", "Fix deploy script", "idle", current + 1, [
+            turn("turn_active", "completed", current + 1, "done"),
+          ]);
+          throw new Error("No active turn");
+        },
+      },
+    });
+    const rpc = await waitForRequest("thread/resume");
+
+    buttonInstances[0].push("select");
+    buttonInstances[0].push("select");
+    dictationInstances[0].emitText("Please continue");
+    buttonInstances[0].push("select");
+
+    await vi.waitFor(() => {
+      expect(renderText()).toContain("No active turn.");
+    });
+    expect(rpc.requests.some(item => item.method === "turn/start")).toBe(false);
+
+    buttonInstances[0].push("select");
+    await waitForRequest("turn/start");
+
+    const start = rpc.requests.find(item => item.method === "turn/start");
+    expect(start.params).toEqual({
+      threadId: "thr_active",
+      input: [{ type: "text", text: "Please continue", text_elements: [] }],
     });
   });
 
@@ -224,7 +318,7 @@ describe("watch runtime", () => {
     expect(startIndex).toBeGreaterThan(resumeIndex);
     expect(rpc.requests[startIndex].params).toEqual({
       threadId: "thr_done",
-      input: [{ type: "text", text: "Follow up" }],
+      input: [{ type: "text", text: "Follow up", text_elements: [] }],
     });
   });
 

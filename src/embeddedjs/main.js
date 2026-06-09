@@ -47,6 +47,7 @@ let connectionState = "";
 let errorMessage = "";
 let replyText = "";
 let replyError = "";
+let replyForceStart = false;
 let reconnectDelay = 2000;
 let reconnectTimer = null;
 let syncTimer = null;
@@ -145,7 +146,7 @@ async function connectAndSync() {
                 redraw();
             },
             onError(error) {
-                errorMessage = error.message || String(error);
+                errorMessage = humanError(error);
                 redraw();
             },
             onClose() {
@@ -345,6 +346,15 @@ function handleNotification(method, params) {
     } else if (method === "turn/plan/updated") {
         job.progress = extractPlanText(params) || job.progress;
         changed = true;
+    } else if (method === "item/started") {
+        job.latestTurnId = params.turnId || job.latestTurnId;
+        job.latestTurnStatus = "inProgress";
+        job.progress = describeItemProgress(params.item, false) || job.progress;
+        changed = true;
+    } else if (method === "item/completed") {
+        job.latestTurnId = params.turnId || job.latestTurnId;
+        job.progress = describeItemProgress(params.item, true) || job.progress;
+        changed = true;
     } else if (method === "item/agentMessage/delta") {
         const delta = params.delta || params.text || "";
         if (delta)
@@ -458,6 +468,7 @@ function handleDetailButton(type) {
 function startVoiceReply() {
     replyText = "";
     replyError = "";
+    replyForceStart = false;
     mode = "dictating";
     redraw();
     voiceReply.start();
@@ -477,23 +488,31 @@ async function sendReply() {
         const latestTurn = getLatestTurnFromThread(thread);
         const latestStatus = getTurnStatus(latestTurn);
         const activeThread = getThreadStatusType(thread) === "active";
-        const input = [{ type: "text", text: replyText }];
+        const input = makeTextInput(replyText);
 
-        if (latestStatus === "inProgress" && activeThread) {
-            await rpc.request("turn/steer", {
-                threadId: job.id,
-                expectedTurnId: getTurnId(latestTurn),
-                input
-            });
+        if (latestStatus === "inProgress" && activeThread && !replyForceStart) {
+            try {
+                await rpc.request("turn/steer", {
+                    threadId: job.id,
+                    expectedTurnId: getTurnId(latestTurn),
+                    input
+                });
+            } catch (error) {
+                if (await activeTurnStillAvailable(job.id)) {
+                    throw error;
+                }
+                replyForceStart = true;
+                replyError = "No active turn. Select starts new turn.";
+                mode = "dictationPreview";
+                redraw();
+                return;
+            }
         } else {
-            await rpc.request("thread/resume", { threadId: job.id });
-            await rpc.request("turn/start", {
-                threadId: job.id,
-                input
-            });
+            await startNewTurn(job.id, input);
         }
 
         replyText = "";
+        replyForceStart = false;
         mode = "detail";
         await syncDashboard();
     } catch (error) {
@@ -643,6 +662,87 @@ function extractPlanText(params) {
     return "";
 }
 
+function makeTextInput(text) {
+    return [{ type: "text", text, text_elements: [] }];
+}
+
+async function startNewTurn(threadId, input) {
+    await rpc.request("thread/resume", { threadId });
+    await rpc.request("turn/start", {
+        threadId,
+        input
+    });
+}
+
+async function activeTurnStillAvailable(threadId) {
+    try {
+        const read = await rpc.request("thread/read", { threadId, includeTurns: true }, { retries: 0 });
+        const thread = read.thread || read;
+        const latestTurn = getLatestTurnFromThread(thread);
+        return getThreadStatusType(thread) === "active" && getTurnStatus(latestTurn) === "inProgress";
+    } catch (_) {
+        return true;
+    }
+}
+
+function describeItemProgress(item, completed) {
+    if (!item || !item.type)
+        return "";
+
+    if (item.type === "agentMessage")
+        return trimPreview(item.text || "");
+    if (item.type === "plan")
+        return trimPreview(item.text || "");
+    if (item.type === "reasoning")
+        return trimPreview((item.summary && item.summary[0]) || (item.content && item.content[0]) || "");
+    if (item.type === "commandExecution")
+        return describeCommandProgress(item, completed);
+    if (item.type === "fileChange")
+        return completed ? describeFileChangeCompleted(item) : "Editing files";
+    if (item.type === "mcpToolCall")
+        return describeToolProgress(item.tool, item.status, completed);
+    if (item.type === "dynamicToolCall")
+        return describeToolProgress(item.tool, item.status, completed);
+    if (item.type === "webSearch")
+        return trimPreview(completed ? "Searched web" : "Searching web" + (item.query ? ": " + item.query : ""));
+    if (item.type === "collabAgentToolCall")
+        return describeToolProgress(item.tool, item.status, completed);
+    if (item.type === "imageGeneration")
+        return completed ? "Generated image" : "Generating image";
+    if (item.type === "contextCompaction")
+        return completed ? "Compacted context" : "Compacting context";
+
+    return "";
+}
+
+function describeCommandProgress(item, completed) {
+    const command = trimPreview(item.command || "");
+    if (!completed)
+        return command ? "Running: " + command : "Running command";
+    if (item.status === "failed" || item.exitCode)
+        return command ? "Command failed: " + command : "Command failed";
+    if (item.status === "declined")
+        return "Command declined";
+    return command ? "Finished: " + command : "Command completed";
+}
+
+function describeFileChangeCompleted(item) {
+    if (item.status === "failed")
+        return "File change failed";
+    if (item.status === "declined")
+        return "File change declined";
+    return "Edited files";
+}
+
+function describeToolProgress(tool, status, completed) {
+    const name = tool ? String(tool) : "tool";
+    if (!completed)
+        return trimPreview("Running " + name);
+    if (status === "failed")
+        return trimPreview(name + " failed");
+    return trimPreview(name + " completed");
+}
+
 function trimPreview(value) {
     const clean = String(value || "").replace(/\s+/g, " ").trim();
     return clean.length > 80 ? clean.slice(0, 77) + "..." : clean;
@@ -718,7 +818,8 @@ function closeForExit() {
 function humanError(error) {
     if (!error)
         return "Unknown error";
-    if (error.message)
-        return error.message;
-    return String(error);
+    const message = error.message || String(error);
+    if (/^WebSocket (error|closed)/i.test(message))
+        return "Cannot reach Codex on Tailnet";
+    return message;
 }
