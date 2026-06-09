@@ -17,7 +17,8 @@ describe("PKJS config relay", () => {
     harness.listeners.showConfiguration({});
 
     const url = harness.openedUrls[0];
-    expect(url).toMatch(/^https:\/\/nick1udwig\.github\.io\/codex-pebble\/config\/\?settings=/);
+    expect(url).toMatch(/^https:\/\/nick1udwig\.github\.io\/codex-pebble\/config\/\?/);
+    expect(new URL(url).searchParams.get("v")).toBe("20260609-return-to");
     const payload = JSON.parse(decodeURIComponent(new URL(url).searchParams.get("settings")));
     expect(payload).toEqual({
       wsUrl: "ws://codex.tailnet:4500",

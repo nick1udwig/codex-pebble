@@ -1,7 +1,7 @@
 const moddableProxy = require("@moddable/pebbleproxy");
 
 const SETTINGS_KEY = "codexJobsSettings";
-const CONFIG_URL = "https://nick1udwig.github.io/codex-pebble/config/";
+const CONFIG_URL = "https://nick1udwig.github.io/codex-pebble/config/?v=20260609-return-to";
 
 Pebble.addEventListener("ready", function(event) {
     moddableProxy.readyReceived(event);

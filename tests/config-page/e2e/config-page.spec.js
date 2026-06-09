@@ -75,6 +75,11 @@ test("persists settings locally without storing credentials", async ({ page }) =
 test("uses emulator return_to callback when no bridge is injected", async ({ browser }) => {
   const page = await browser.newPage();
   const returnTo = "http://localhost:12345/close?";
+  const settings = encodeURIComponent(JSON.stringify({
+    wsUrl: "",
+    displayLimit: 3,
+    recentCompletionLookbackMinutes: 720,
+  }));
   let callbackUrl = "";
 
   await page.route(/http:\/\/localhost:12345\/close\?.*/, async route => {
@@ -82,7 +87,7 @@ test("uses emulator return_to callback when no bridge is injected", async ({ bro
     await route.fulfill({ status: 200, body: "OK" });
   });
 
-  await page.goto(`/?return_to=${encodeURIComponent(returnTo)}`);
+  await page.goto(`/?v=20260609-return-to&settings=${settings}&return_to=${encodeURIComponent(returnTo)}`);
   await page.fill("#wsUrl", "ws://127.0.0.1:4500");
   await page.fill("#displayLimit", "3");
   await page.fill("#recentCompletionLookbackMinutes", "720");
