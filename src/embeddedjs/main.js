@@ -164,6 +164,8 @@ async function connectAndSync() {
     } catch (error) {
         errorMessage = humanError(error);
         stale = !!(dashboard.jobs && dashboard.jobs.length);
+        if (stale)
+            saveCachedDashboard({ ...dashboard, stale: true });
         if (!stale)
             mode = "connecting";
         scheduleReconnect();
@@ -607,7 +609,7 @@ function dashboardDisplay() {
     const limit = expanded ? jobs.length : settings.displayLimit;
     return {
         jobs: jobs.slice(0, limit),
-        hasMore: jobs.length > limit
+        hasMore: jobs.length > settings.displayLimit
     };
 }
 
@@ -661,6 +663,7 @@ function scheduleSyncSoon(delayMs = 750) {
             syncDashboard().then(redraw).catch(error => {
                 errorMessage = humanError(error);
                 stale = true;
+                saveCachedDashboard({ ...dashboard, stale: true });
                 redraw();
             });
     }, delayMs);
