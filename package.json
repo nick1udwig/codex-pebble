@@ -2,11 +2,9 @@
   "name": "codex-jobs",
   "author": "Nick",
   "version": "0.1.0",
-  "description": "RePebble Alloy watch app for Codex app-server jobs over WebSocket JSON-RPC.",
+  "description": "Pebble watch app for monitoring Codex app-server jobs over WebSocket JSON-RPC.",
   "keywords": [
     "pebble-app",
-    "repebble",
-    "alloy",
     "codex"
   ],
   "private": true,
@@ -17,6 +15,7 @@
     "test:build": "bash scripts/test-build.sh",
     "test:pre-release": "bash scripts/test-pre-release.sh",
     "smoke:app-server": "node scripts/smoke-app-server.mjs",
+    "dev:relay": "node scripts/codex-ws-origin-relay.mjs",
     "dev:config": "node scripts/serve-config-page.mjs --port 4173",
     "build:config:docs": "node scripts/build-config-docs.mjs",
     "build:watch": "pebble build",
@@ -24,9 +23,7 @@
     "schemas:ts": "codex app-server generate-ts --out ./schemas",
     "schemas:json": "codex app-server generate-json-schema --out ./schemas"
   },
-  "dependencies": {
-    "@moddable/pebbleproxy": "^0.1.8"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@playwright/test": "^1.53.0",
     "esbuild": "^0.25.11",
@@ -35,7 +32,6 @@
   "pebble": {
     "displayName": "Codex Jobs",
     "uuid": "e1a19869-91bd-42c4-ab84-6301e44e25c7",
-    "projectType": "moddable",
     "sdkVersion": "3",
     "enableMultiJS": true,
     "targetPlatforms": [
@@ -48,10 +44,12 @@
     "watchapp": {
       "watchface": false
     },
-    "messageKeys": [
-      "Config",
-      "ConfigRequest"
-    ],
+    "messageKeys": {
+      "MessageType": 0,
+      "Payload": 1,
+      "RequestId": 2,
+      "SyncState": 3
+    },
     "resources": {
       "media": []
     }

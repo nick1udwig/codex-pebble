@@ -17,14 +17,14 @@ test.beforeEach(async ({ page }) => {
 
 test("loads embedded settings and submits sanitized settings", async ({ page }) => {
   const settings = encodeURIComponent(JSON.stringify({
-    wsUrl: " ws://codex-host.tailnet-name.ts.net:4500 ",
+    wsUrl: " ws://codex-relay.tailnet-name.ts.net:4501 ",
     displayLimit: 5,
     recentCompletionLookbackMinutes: 1440,
   }));
 
   await page.goto(`/?settings=${settings}`);
 
-  await expect(page.locator("#wsUrl")).toHaveValue("ws://codex-host.tailnet-name.ts.net:4500");
+  await expect(page.locator("#wsUrl")).toHaveValue("ws://codex-relay.tailnet-name.ts.net:4501");
   await expect(page.locator("#displayLimit")).toHaveValue("5");
   await expect(page.locator("#recentCompletionLookbackMinutes")).toHaveValue("1440");
 
@@ -58,14 +58,14 @@ test("rejects non-websocket URLs without closing", async ({ page }) => {
 
 test("persists settings locally without storing credentials", async ({ page }) => {
   await page.goto("/");
-  await page.fill("#wsUrl", "ws://codex-host.tailnet-name.ts.net:4500");
+  await page.fill("#wsUrl", "ws://codex-relay.tailnet-name.ts.net:4501");
   await page.fill("#displayLimit", "4");
   await page.fill("#recentCompletionLookbackMinutes", "720");
   await page.click("#save-settings");
 
   const stored = await page.evaluate(() => JSON.parse(window.localStorage.getItem("codex_jobs:config_state")));
   expect(stored).toEqual({
-    wsUrl: "ws://codex-host.tailnet-name.ts.net:4500",
+    wsUrl: "ws://codex-relay.tailnet-name.ts.net:4501",
     displayLimit: 4,
     recentCompletionLookbackMinutes: 720,
   });
@@ -88,7 +88,7 @@ test("uses emulator return_to callback when no bridge is injected", async ({ bro
   });
 
   await page.goto(`/?v=20260609-return-to&settings=${settings}&return_to=${encodeURIComponent(returnTo)}`);
-  await page.fill("#wsUrl", "ws://127.0.0.1:4500");
+  await page.fill("#wsUrl", "ws://127.0.0.1:4501");
   await page.fill("#displayLimit", "3");
   await page.fill("#recentCompletionLookbackMinutes", "720");
 
@@ -98,7 +98,7 @@ test("uses emulator return_to callback when no bridge is injected", async ({ bro
   ]);
 
   expect(decodeURIComponent(callbackUrl.slice(returnTo.length))).toBe(JSON.stringify({
-    wsUrl: "ws://127.0.0.1:4500",
+    wsUrl: "ws://127.0.0.1:4501",
     displayLimit: 3,
     recentCompletionLookbackMinutes: 720,
   }));

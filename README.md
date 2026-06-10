@@ -1,36 +1,49 @@
 # Codex Jobs for Pebble
 
-RePebble Alloy watch app for monitoring active Codex app-server jobs over the unmodified WebSocket JSON-RPC protocol.
+Native Pebble C watch app for monitoring Codex app-server jobs over WebSocket JSON-RPC.
 
 ## Scope
 
-- Watch-side job data uses `ws://<tailscale-host>:<port>` and Codex app-server JSON-RPC.
-- PKJS is only used for the Moddable network proxy and local configuration relay.
-- There are no `/watch/*` endpoints, no custom bridge server, and no OpenAI credential flow on the watch.
+- The watch UI is native Pebble C.
+- PKJS handles hosted settings, Codex JSON-RPC, and the compact AppMessage bridge to C.
+- Browser-like Pebble WebSocket clients need the local origin relay because Codex app-server rejects WebSocket handshakes with an `Origin` header.
+- There are no `/watch/*` endpoints and no OpenAI credential flow on the watch. The relay only strips the WebSocket `Origin` header; it does not translate Codex JSON-RPC.
 
 ## Setup
 
-1. Install the proxy package if your Pebble toolchain has not already installed dependencies:
-
-   ```sh
-   pebble package install @moddable/pebbleproxy
-   ```
-
-2. Build the hosted config page into `docs/config`:
+1. Build the hosted config page into `docs/config`:
 
    ```sh
    npm run build:config:docs
    ```
 
-3. Host `docs/` with GitHub Pages. Published builds default to:
+2. Host `docs/` with GitHub Pages. Published builds default to:
 
    ```text
    https://nick1udwig.github.io/codex-pebble/config/
    ```
-4. Start Codex app-server on a Tailnet-reachable address:
+3. Start Codex app-server locally:
 
    ```sh
-   codex app-server --listen ws://<tailscale-ip-or-host>:4500
+   codex app-server --listen ws://127.0.0.1:4500
+   ```
+
+4. In another terminal, start the origin relay:
+
+   ```sh
+   npm run dev:relay
+   ```
+
+   Configure the watch to use the relay URL, not the upstream app-server URL. For the emulator, use:
+
+   ```text
+   ws://127.0.0.1:4501
+   ```
+
+   For a real phone, bind the relay to a Tailnet-reachable address and keep it firewalled to trusted devices:
+
+   ```sh
+   npm run dev:relay -- --listen ws://<tailnet-ip-or-host>:4501 --upstream ws://127.0.0.1:4500
    ```
 
 5. Build and install:
@@ -53,8 +66,13 @@ npm run test:pre-release
 
 Use `npm run dev:config` to serve the config page at `http://127.0.0.1:4173`.
 
-If a local Codex app-server is already running, `npm run smoke:app-server`
-performs a read-only JSON-RPC smoke test against the default Unix socket.
+If a local Codex app-server and relay are already running, `npm run smoke:app-server -- --ws-url ws://127.0.0.1:4501` performs a read-only JSON-RPC smoke test over the same WebSocket path PKJS uses.
+
+For an emulator smoke test:
+
+```sh
+pebble install --emulator emery --logs
+```
 
 ## Deployment
 
@@ -73,4 +91,4 @@ npm run schemas:ts
 npm run schemas:json
 ```
 
-The checked-in `schemas/` directory was generated from the local Codex install and is used by unit tests to catch protocol drift. This schema version does not expose `thread/turns/list`, so the watch client reads `thread/read` with `includeTurns:true` and derives the latest turn locally.
+The checked-in `schemas/` directory was generated from the local Codex install and is used by unit tests to catch protocol drift. PKJS currently reads `thread/list`, distills each thread into a compact row, and sends those rows to the native C watch UI with AppMessage.

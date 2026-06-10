@@ -1,3 +1,7 @@
+Historical spec: superseded by the native C rewrite
+
+This file is kept as design history for the original Alloy/Moddable direction. The current implementation is a native Pebble C watch app with PKJS handling settings, Codex JSON-RPC, and the AppMessage bridge.
+
 Spec: RePebble Codex Jobs watch app
 
 Scope: Alloy JavaScript watch app + PebbleKit JS network proxy + hosted config page. No native phone companion. No custom server bridge. No custom /watch/* endpoints. Codex data path must use only the unmodified Codex app-server WebSocket JSON-RPC protocol.

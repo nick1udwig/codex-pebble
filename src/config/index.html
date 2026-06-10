@@ -15,9 +15,9 @@
 
       <section class="panel">
         <form id="settings-form" novalidate>
-          <label for="wsUrl">Codex app-server WebSocket URL</label>
-          <input id="wsUrl" name="wsUrl" type="text" inputmode="url" placeholder="ws://codex-host.tailnet-name.ts.net:4500" required />
-          <p class="hint">Use a Tailnet-reachable app-server URL. This page never asks for OpenAI credentials.</p>
+          <label for="wsUrl">Codex relay WebSocket URL</label>
+          <input id="wsUrl" name="wsUrl" type="text" inputmode="url" placeholder="ws://127.0.0.1:4501" required />
+          <p class="hint">Use the origin relay URL. The relay forwards to Codex app-server without storing credentials.</p>
 
           <label for="displayLimit">Dashboard rows</label>
           <input id="displayLimit" name="displayLimit" type="number" min="1" max="8" step="1" />
