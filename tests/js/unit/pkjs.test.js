@@ -86,13 +86,116 @@ describe("native C PKJS bridge", () => {
 
     const row = harness.sentMessages.find(message => message[0] === "job_item");
     expect(row[1]).toContain("thr_1|active|Fix deploy|active - cli - codex-pebble");
+    const notLoadedRow = harness.sentMessages.find(message => String(message[1]).startsWith("thr_2|"));
+    expect(notLoadedRow[1]).toContain("thr_2|notLoaded|Review tests in detail|vscode - repo");
     expect(harness.sentMessages.at(-1)).toMatchObject({
       0: "job_complete",
-      1: "2",
+      1: "2|1",
       3: 2,
     });
   });
+
+  it("loads more rows when the C app asks for the next page", async () => {
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 2,
+        recentCompletionLookbackMinutes: 720,
+      }),
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "app_ready" } });
+    harness.webSockets[0].open();
+    await vi.waitFor(() => expect(lastMessageOfType(harness, "job_complete")?.[1]).toBe("2|1"));
+
+    harness.listeners.appmessage({ payload: { 0: "load_more" } });
+    harness.webSockets.at(-1).open();
+
+    await vi.waitFor(() => expect(lastMessageOfType(harness, "job_complete")?.[1]).toBe("3|0"));
+    expect(harness.webSockets.at(-1).sentJson.find(message => message.method === "thread/list").params.limit).toBe(4);
+  });
+
+  it("loads thread detail with thread/read and emits readable content", async () => {
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 2,
+        recentCompletionLookbackMinutes: 720,
+      }),
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "detail_request", 1: "thr_2" } });
+    harness.webSockets[0].open();
+
+    await vi.waitFor(() => {
+      expect(lastMessageOfType(harness, "detail_update")).toBeTruthy();
+    });
+
+    const methods = harness.webSockets[0].sentJson.map(message => message.method);
+    expect(methods).toEqual(["initialize", "initialized", "thread/read"]);
+    expect(harness.webSockets[0].sentJson[2].params).toEqual({
+      threadId: "thr_2",
+      includeTurns: true,
+    });
+
+    const detail = lastMessageOfType(harness, "detail_update");
+    expect(detail[1]).toContain("thr_2|You: Can you add more tests?");
+    expect(detail[1]).toContain("Codex: Added the bridge tests.");
+    expect(detail[1]).not.toContain("notLoaded");
+  });
+
+  it("starts a new turn for dictated replies on idle threads", async () => {
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 2,
+        recentCompletionLookbackMinutes: 720,
+      }),
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "reply", 1: "thr_2|please continue" } });
+    harness.webSockets[0].open();
+
+    await vi.waitFor(() => {
+      expect(harness.webSockets[0].sentJson.some(message => message.method === "turn/start")).toBe(true);
+    });
+
+    const turnStart = harness.webSockets[0].sentJson.find(message => message.method === "turn/start");
+    expect(turnStart.params).toMatchObject({
+      threadId: "thr_2",
+      input: [{ type: "text", text: "please continue", text_elements: [] }],
+    });
+    expect(harness.sentMessages.some(message => message[0] === "sync_status" && message[1] === "Reply sent")).toBe(true);
+  });
+
+  it("steers an in-progress turn for dictated replies on active threads", async () => {
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 2,
+        recentCompletionLookbackMinutes: 720,
+      }),
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "reply", 1: "thr_1|focus on tests" } });
+    harness.webSockets[0].open();
+
+    await vi.waitFor(() => {
+      expect(harness.webSockets[0].sentJson.some(message => message.method === "turn/steer")).toBe(true);
+    });
+
+    const steer = harness.webSockets[0].sentJson.find(message => message.method === "turn/steer");
+    expect(steer.params).toMatchObject({
+      threadId: "thr_1",
+      expectedTurnId: "turn_active",
+      input: [{ type: "text", text: "focus on tests", text_elements: [] }],
+    });
+  });
 });
+
+function lastMessageOfType(harness, type) {
+  return harness.sentMessages.filter(message => message[0] === type).at(-1);
+}
 
 function loadPkjs(initialStorage = {}) {
   const listeners = {};
@@ -100,6 +203,32 @@ function loadPkjs(initialStorage = {}) {
   const sentMessages = [];
   const webSockets = [];
   const storage = new Map(Object.entries(initialStorage));
+  const threads = [
+    {
+      id: "thr_1",
+      name: "Fix deploy",
+      preview: "Fix deploy preview",
+      status: { type: "active" },
+      source: "cli",
+      cwd: "/home/nick/git/codex-pebble",
+    },
+    {
+      id: "thr_2",
+      name: null,
+      preview: "Review tests in detail",
+      status: { type: "notLoaded" },
+      source: "vscode",
+      cwd: "/tmp/repo",
+    },
+    {
+      id: "thr_3",
+      name: "Write docs",
+      preview: "Write docs",
+      status: { type: "idle" },
+      source: "appServer",
+      cwd: "/tmp/docs",
+    },
+  ];
 
   class FakeWebSocket {
     constructor(url) {
@@ -120,28 +249,29 @@ function loadPkjs(initialStorage = {}) {
       if (message.method === "initialize") {
         this.onmessage({ data: JSON.stringify({ id: message.id, result: { userAgent: "test" } }) });
       } else if (message.method === "thread/list") {
+        const limit = message.params.limit ?? threads.length;
         this.onmessage({ data: JSON.stringify({
           id: message.id,
           result: {
-            data: [
-              {
-                id: "thr_1",
-                name: "Fix deploy",
-                preview: "Fix deploy preview",
-                status: { type: "active" },
-                source: "cli",
-                cwd: "/home/nick/git/codex-pebble",
-              },
-              {
-                id: "thr_2",
-                name: null,
-                preview: "Review tests in detail",
-                status: { type: "notLoaded" },
-                source: "vscode",
-                cwd: "/tmp/repo",
-              },
-            ],
+            data: threads.slice(0, limit),
+            nextCursor: limit < threads.length ? "next-page" : null,
+            backwardsCursor: "prev-page",
           },
+        }) });
+      } else if (message.method === "thread/read") {
+        this.onmessage({ data: JSON.stringify({
+          id: message.id,
+          result: { thread: threadReadFixture(message.params.threadId) },
+        }) });
+      } else if (message.method === "turn/start") {
+        this.onmessage({ data: JSON.stringify({
+          id: message.id,
+          result: { turn: { id: "turn_new", status: "inProgress", items: [] } },
+        }) });
+      } else if (message.method === "turn/steer") {
+        this.onmessage({ data: JSON.stringify({
+          id: message.id,
+          result: { turnId: message.params.expectedTurnId },
         }) });
       }
     }
@@ -194,5 +324,51 @@ function loadPkjs(initialStorage = {}) {
     openedUrls,
     sentMessages,
     webSockets,
+  };
+}
+
+function threadReadFixture(threadId) {
+  if (threadId === "thr_1") {
+    return {
+      id: "thr_1",
+      preview: "Fix deploy preview",
+      turns: [{
+        id: "turn_active",
+        status: "inProgress",
+        items: [
+          {
+            type: "userMessage",
+            id: "item_1",
+            content: [{ type: "text", text: "Fix the deploy", text_elements: [] }],
+          },
+          {
+            type: "agentMessage",
+            id: "item_2",
+            text: "Working on the deploy.",
+          },
+        ],
+      }],
+    };
+  }
+
+  return {
+    id: threadId,
+    preview: "Review tests in detail",
+    turns: [{
+      id: "turn_done",
+      status: "completed",
+      items: [
+        {
+          type: "userMessage",
+          id: "item_3",
+          content: [{ type: "text", text: "Can you add more tests?", text_elements: [] }],
+        },
+        {
+          type: "agentMessage",
+          id: "item_4",
+          text: "Added the bridge tests.",
+        },
+      ],
+    }],
   };
 }

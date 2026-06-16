@@ -25,6 +25,7 @@ run_step() {
 
 run_step "JS tests" npm run test:js
 run_step "Config-page tests" npm run test:config
+run_step "Sidecar tests" npm run test:sidecar
 run_step "Watch build" npm run test:build
 run_step "Static config copy" npm run build:config:docs
 

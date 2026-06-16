@@ -6,8 +6,8 @@ Native Pebble C watch app for monitoring Codex app-server jobs over WebSocket JS
 
 - The watch UI is native Pebble C.
 - PKJS handles hosted settings, Codex JSON-RPC, and the compact AppMessage bridge to C.
-- Browser-like Pebble WebSocket clients need the local origin relay because Codex app-server rejects WebSocket handshakes with an `Origin` header.
-- There are no `/watch/*` endpoints and no OpenAI credential flow on the watch. The relay only strips the WebSocket `Origin` header; it does not translate Codex JSON-RPC.
+- Browser-like Pebble WebSocket clients connect to a local sidecar because Codex app-server rejects WebSocket handshakes with an `Origin` header.
+- There are no `/watch/*` endpoints and no OpenAI credential flow on the watch. The sidecar forwards Codex JSON-RPC messages without translating them.
 
 ## Setup
 
@@ -22,31 +22,46 @@ Native Pebble C watch app for monitoring Codex app-server jobs over WebSocket JS
    ```text
    https://nick1udwig.github.io/codex-pebble/config/
    ```
-3. Start Codex app-server locally:
+3. Start the sidecar locally:
 
    ```sh
-   codex app-server --listen ws://127.0.0.1:4500
+   npm run dev:sidecar
    ```
 
-4. In another terminal, start the origin relay:
+   By default this listens for codex-pebble at `ws://127.0.0.1:4501`. On launch it probes Codex app-server in this order, without starting Codex:
 
-   ```sh
-   npm run dev:relay
-   ```
+   1. Existing Unix-socket app-server at `~/.codex/app-server-control/app-server-control.sock`.
+   2. Existing stdio transport attached to the sidecar process's stdin/stdout.
 
-   Configure the watch to use the relay URL, not the upstream app-server URL. For the emulator, use:
+   If neither transport is available, the sidecar exits with an error before accepting watch connections.
+
+   Configure the watch to use the sidecar URL. For the emulator, use:
 
    ```text
    ws://127.0.0.1:4501
    ```
 
-   For a real phone, bind the relay to a Tailnet-reachable address and keep it firewalled to trusted devices:
+   For a real phone, bind the sidecar to a Tailnet-reachable or LAN address and use a token:
 
    ```sh
-   npm run dev:relay -- --listen ws://<tailnet-ip-or-host>:4501 --upstream ws://127.0.0.1:4500
+   npm run dev:sidecar -- --listen <tailnet-ip-or-host>:4501 --token <shared-token>
    ```
 
-5. Build and install:
+   Configure the watch with:
+
+   ```text
+   ws://<tailnet-ip-or-host>:4501/?token=<shared-token>
+   ```
+
+   To pass a custom Unix socket:
+
+   ```sh
+   npm run dev:sidecar -- --unix-socket /path/to/app-server.sock
+   ```
+
+   The stdio fallback is only useful when another launcher has already connected the sidecar process's stdin/stdout to `codex app-server --listen stdio://`. The sidecar does not start Codex app-server.
+
+4. Build and install:
 
    ```sh
    npm run build:watch
@@ -60,13 +75,14 @@ The local gates mirror the `tg-pebble` layout:
 ```sh
 npm run test:js
 npm run test:config
+npm run test:sidecar
 npm run test:build
 npm run test:pre-release
 ```
 
 Use `npm run dev:config` to serve the config page at `http://127.0.0.1:4173`.
 
-If a local Codex app-server and relay are already running, `npm run smoke:app-server -- --ws-url ws://127.0.0.1:4501` performs a read-only JSON-RPC smoke test over the same WebSocket path PKJS uses.
+If a local sidecar is already running, `npm run smoke:app-server -- --ws-url ws://127.0.0.1:4501` performs a read-only JSON-RPC smoke test over the same WebSocket path PKJS uses.
 
 For an emulator smoke test:
 
@@ -78,7 +94,7 @@ pebble install --emulator emery --logs
 
 - `.github/workflows/pages.yml` builds `docs/config` from `src/config` and deploys GitHub Pages.
 - `.github/workflows/public-build.yml` builds a release `.pbw` and uploads it as a workflow artifact.
-- `.github/workflows/pre-release.yml` runs JS tests, config-page tests, and a watch build.
+- `.github/workflows/pre-release.yml` runs JS tests, config-page tests, sidecar tests, and a watch build.
 
 Set GitHub Pages to `GitHub Actions` under repository settings before relying on the Pages workflow.
 

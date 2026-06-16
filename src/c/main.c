@@ -6,20 +6,26 @@
 
 #include "message_keys.auto.h"
 
-#define CODEX_MAX_JOBS 8
+#define CODEX_MAX_JOBS 16
 #define CODEX_ID_LENGTH 48
 #define CODEX_TITLE_LENGTH 48
 #define CODEX_DETAIL_LENGTH 96
+#define CODEX_BODY_LENGTH 384
+#define CODEX_REPLY_LENGTH 256
 #define CODEX_STATUS_LENGTH 64
 
 #define CODEX_MSG_APP_READY "app_ready"
 #define CODEX_MSG_REFRESH "refresh"
+#define CODEX_MSG_LOAD_MORE "load_more"
 #define CODEX_MSG_OPEN_CONFIG "open_config"
+#define CODEX_MSG_DETAIL_REQUEST "detail_request"
+#define CODEX_MSG_REPLY "reply"
 #define CODEX_MSG_SETTINGS_STATE "settings_state"
 #define CODEX_MSG_SYNC_STATUS "sync_status"
 #define CODEX_MSG_JOB_CLEAR "job_clear"
 #define CODEX_MSG_JOB_ITEM "job_item"
 #define CODEX_MSG_JOB_COMPLETE "job_complete"
+#define CODEX_MSG_DETAIL_UPDATE "detail_update"
 #define CODEX_MSG_ERROR "error"
 
 typedef enum {
@@ -33,6 +39,9 @@ typedef struct {
   char kind[16];
   char title[CODEX_TITLE_LENGTH];
   char detail[CODEX_DETAIL_LENGTH];
+  char body[CODEX_BODY_LENGTH];
+  bool has_detail;
+  bool loading_detail;
 } CodexJob;
 
 static Window *s_main_window;
@@ -41,11 +50,16 @@ static MenuLayer *s_menu_layer;
 static TextLayer *s_status_layer;
 static TextLayer *s_detail_title_layer;
 static TextLayer *s_detail_body_layer;
+static TextLayer *s_detail_footer_layer;
 static AppTimer *s_ready_timer;
+#if defined(PBL_MICROPHONE)
+static DictationSession *s_dictation_session;
+#endif
 
 static CodexJob s_jobs[CODEX_MAX_JOBS];
 static size_t s_job_count;
 static int s_selected_job = -1;
+static bool s_has_more;
 static bool s_has_settings;
 static bool s_received_state;
 static CodexSyncState s_sync_state = CodexSyncDesynced;
@@ -54,6 +68,7 @@ static char s_status[CODEX_STATUS_LENGTH] = "Starting";
 static void prv_send_message(const char *type, const char *payload);
 static void prv_reload_menu(void);
 static void prv_copy_string(char *dest, size_t dest_size, const char *src);
+static void prv_update_detail_layers(void);
 
 static void prv_copy_string(char *dest, size_t dest_size, const char *src) {
   if (!dest || dest_size == 0) {
@@ -87,6 +102,25 @@ static bool prv_string_is_truthy(const char *value) {
   return value && value[0] == '1';
 }
 
+static void prv_copy_payload_field(char *dest, size_t dest_size, const char *src) {
+  size_t index;
+
+  if (!dest || dest_size == 0) {
+    return;
+  }
+
+  if (!src) {
+    dest[0] = '\0';
+    return;
+  }
+
+  for (index = 0; index + 1 < dest_size && src[index]; index += 1) {
+    char c = src[index];
+    dest[index] = (c == '|' || c == '\n' || c == '\r') ? ' ' : c;
+  }
+  dest[index] = '\0';
+}
+
 static void prv_set_status(const char *status, CodexSyncState sync_state) {
   s_sync_state = sync_state;
   prv_copy_string(s_status, sizeof(s_status), status);
@@ -98,6 +132,7 @@ static void prv_set_status(const char *status, CodexSyncState sync_state) {
 static void prv_clear_jobs(void) {
   s_job_count = 0;
   s_selected_job = -1;
+  s_has_more = false;
 }
 
 static void prv_handle_settings_state(const char *payload) {
@@ -131,6 +166,63 @@ static void prv_handle_job_item(const char *payload) {
   prv_copy_string(job->kind, sizeof(job->kind), prv_next_field(&cursor));
   prv_copy_string(job->title, sizeof(job->title), prv_next_field(&cursor));
   prv_copy_string(job->detail, sizeof(job->detail), prv_next_field(&cursor));
+  prv_copy_string(job->body, sizeof(job->body), job->detail);
+  job->has_detail = false;
+  job->loading_detail = false;
+}
+
+static CodexJob *prv_find_job_by_id(const char *id) {
+  size_t index;
+  for (index = 0; index < s_job_count; index += 1) {
+    if (strcmp(s_jobs[index].id, id) == 0) {
+      return &s_jobs[index];
+    }
+  }
+  return NULL;
+}
+
+static void prv_handle_job_complete(const char *payload) {
+  char buffer[32];
+  char *cursor = buffer;
+
+  prv_copy_string(buffer, sizeof(buffer), payload);
+  (void)prv_next_field(&cursor);
+  s_has_more = prv_string_is_truthy(prv_next_field(&cursor));
+  prv_set_status(s_job_count ? "Synced" : "No Codex jobs", s_sync_state);
+  prv_reload_menu();
+}
+
+static void prv_handle_detail_update(const char *payload) {
+  char buffer[512];
+  char *cursor = buffer;
+  const char *id;
+  const char *body;
+  CodexJob *job;
+
+  prv_copy_string(buffer, sizeof(buffer), payload);
+  id = prv_next_field(&cursor);
+  body = prv_next_field(&cursor);
+  job = prv_find_job_by_id(id);
+  if (!job) {
+    return;
+  }
+
+  prv_copy_string(job->body, sizeof(job->body), body[0] ? body : "No thread content");
+  job->has_detail = true;
+  job->loading_detail = false;
+  prv_update_detail_layers();
+}
+
+static void prv_request_selected_detail(void) {
+  CodexJob *job = (s_selected_job >= 0 && (size_t)s_selected_job < s_job_count) ? &s_jobs[s_selected_job] : NULL;
+  if (!job) {
+    return;
+  }
+
+  job->loading_detail = true;
+  prv_copy_string(job->body, sizeof(job->body), "Loading thread...");
+  prv_update_detail_layers();
+  prv_send_message(CODEX_MSG_DETAIL_REQUEST, job->id);
 }
 
 static void prv_inbox_received(DictionaryIterator *iter, void *context) {
@@ -148,6 +240,9 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
     prv_handle_settings_state(payload);
   } else if (strcmp(type, CODEX_MSG_SYNC_STATUS) == 0) {
     prv_set_status(payload, s_sync_state);
+    if (s_detail_footer_layer && strcmp(payload, "Syncing") != 0 && strcmp(payload, "Loading more") != 0) {
+      text_layer_set_text(s_detail_footer_layer, payload);
+    }
     prv_reload_menu();
   } else if (strcmp(type, CODEX_MSG_JOB_CLEAR) == 0) {
     prv_clear_jobs();
@@ -155,10 +250,14 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
   } else if (strcmp(type, CODEX_MSG_JOB_ITEM) == 0) {
     prv_handle_job_item(payload);
   } else if (strcmp(type, CODEX_MSG_JOB_COMPLETE) == 0) {
-    prv_set_status(s_job_count ? "Synced" : "No Codex jobs", s_sync_state);
-    prv_reload_menu();
+    prv_handle_job_complete(payload);
+  } else if (strcmp(type, CODEX_MSG_DETAIL_UPDATE) == 0) {
+    prv_handle_detail_update(payload);
   } else if (strcmp(type, CODEX_MSG_ERROR) == 0) {
     prv_set_status(payload[0] ? payload : "Sync failed", CodexSyncDesynced);
+    if (s_detail_footer_layer) {
+      text_layer_set_text(s_detail_footer_layer, s_status);
+    }
     prv_reload_menu();
   }
 }
@@ -204,7 +303,7 @@ static uint16_t prv_get_num_rows(MenuLayer *menu_layer, uint16_t section_index, 
   if (s_job_count == 0) {
     return 1;
   }
-  return (uint16_t)s_job_count;
+  return (uint16_t)(s_job_count + (s_has_more ? 1 : 0));
 }
 
 static int16_t prv_get_header_height(MenuLayer *menu_layer, uint16_t section_index, void *context) {
@@ -223,35 +322,135 @@ static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
     return;
   }
 
+  if ((size_t)cell_index->row >= s_job_count) {
+    menu_cell_basic_draw(ctx, cell_layer, "Load more", "Fetch older threads", NULL);
+    return;
+  }
+
   CodexJob *job = &s_jobs[cell_index->row];
   menu_cell_basic_draw(ctx, cell_layer, job->title, job->detail, NULL);
+}
+
+static void prv_update_detail_layers(void) {
+  CodexJob *job = (s_selected_job >= 0 && (size_t)s_selected_job < s_job_count) ? &s_jobs[s_selected_job] : NULL;
+
+  if (s_detail_title_layer) {
+    text_layer_set_text(s_detail_title_layer, job ? job->title : "Codex Job");
+  }
+  if (s_detail_body_layer) {
+    if (!job) {
+      text_layer_set_text(s_detail_body_layer, "No details");
+    } else if (job->loading_detail) {
+      text_layer_set_text(s_detail_body_layer, "Loading thread...");
+    } else {
+      text_layer_set_text(s_detail_body_layer, job->has_detail ? job->body : job->detail);
+    }
+  }
+  if (s_detail_footer_layer) {
+#if defined(PBL_MICROPHONE)
+    text_layer_set_text(s_detail_footer_layer, job ? "Select: reply" : "");
+#else
+    text_layer_set_text(s_detail_footer_layer, "Reply unavailable");
+#endif
+  }
 }
 
 static void prv_detail_window_load(Window *window) {
   Layer *root = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(root);
   GRect title_frame = GRect(4, 4, bounds.size.w - 8, 42);
-  GRect body_frame = GRect(4, 48, bounds.size.w - 8, bounds.size.h - 52);
-  CodexJob *job = (s_selected_job >= 0 && (size_t)s_selected_job < s_job_count) ? &s_jobs[s_selected_job] : NULL;
+  GRect footer_frame = GRect(0, bounds.size.h - 20, bounds.size.w, 20);
+  GRect body_frame = GRect(4, 48, bounds.size.w - 8, bounds.size.h - 72);
 
   s_detail_title_layer = text_layer_create(title_frame);
   text_layer_set_font(s_detail_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
   text_layer_set_overflow_mode(s_detail_title_layer, GTextOverflowModeTrailingEllipsis);
-  text_layer_set_text(s_detail_title_layer, job ? job->title : "Codex Job");
   layer_add_child(root, text_layer_get_layer(s_detail_title_layer));
 
   s_detail_body_layer = text_layer_create(body_frame);
   text_layer_set_font(s_detail_body_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
   text_layer_set_overflow_mode(s_detail_body_layer, GTextOverflowModeWordWrap);
-  text_layer_set_text(s_detail_body_layer, job ? job->detail : "No details");
   layer_add_child(root, text_layer_get_layer(s_detail_body_layer));
+
+  s_detail_footer_layer = text_layer_create(footer_frame);
+  text_layer_set_font(s_detail_footer_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
+  text_layer_set_text_alignment(s_detail_footer_layer, GTextAlignmentCenter);
+  layer_add_child(root, text_layer_get_layer(s_detail_footer_layer));
+
+  prv_update_detail_layers();
 }
 
 static void prv_detail_window_unload(Window *window) {
   text_layer_destroy(s_detail_title_layer);
   text_layer_destroy(s_detail_body_layer);
+  text_layer_destroy(s_detail_footer_layer);
   s_detail_title_layer = NULL;
   s_detail_body_layer = NULL;
+  s_detail_footer_layer = NULL;
+}
+
+static void prv_send_reply_text(const char *text) {
+  CodexJob *job = (s_selected_job >= 0 && (size_t)s_selected_job < s_job_count) ? &s_jobs[s_selected_job] : NULL;
+  char clean_text[CODEX_REPLY_LENGTH];
+  char payload[CODEX_ID_LENGTH + CODEX_REPLY_LENGTH + 2];
+
+  if (!job || !text || !text[0]) {
+    return;
+  }
+
+  prv_copy_payload_field(clean_text, sizeof(clean_text), text);
+  snprintf(payload, sizeof(payload), "%s|%s", job->id, clean_text);
+  if (s_detail_footer_layer) {
+    text_layer_set_text(s_detail_footer_layer, "Sending...");
+  }
+  prv_send_message(CODEX_MSG_REPLY, payload);
+}
+
+#if defined(PBL_MICROPHONE)
+static void prv_dictation_callback(DictationSession *session, DictationSessionStatus status, char *transcription,
+                                   void *context) {
+  (void)session;
+  (void)context;
+
+  if (status != DictationSessionStatusSuccess || !transcription || !transcription[0]) {
+    if (s_detail_footer_layer) {
+      text_layer_set_text(s_detail_footer_layer, "Voice input failed");
+    }
+    return;
+  }
+
+  prv_send_reply_text(transcription);
+}
+#endif
+
+static void prv_detail_select_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+
+#if defined(PBL_MICROPHONE)
+  if (!s_dictation_session) {
+    if (s_detail_footer_layer) {
+      text_layer_set_text(s_detail_footer_layer, "Voice unavailable");
+    }
+    return;
+  }
+
+  if (s_detail_footer_layer) {
+    text_layer_set_text(s_detail_footer_layer, "Listening...");
+  }
+  if (dictation_session_start(s_dictation_session) != DictationSessionStatusSuccess && s_detail_footer_layer) {
+    text_layer_set_text(s_detail_footer_layer, "Voice unavailable");
+  }
+#else
+  if (s_detail_footer_layer) {
+    text_layer_set_text(s_detail_footer_layer, "No microphone");
+  }
+#endif
+}
+
+static void prv_detail_click_config_provider(void *context) {
+  (void)context;
+  window_single_click_subscribe(BUTTON_ID_SELECT, prv_detail_select_handler);
 }
 
 static void prv_select_click(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
@@ -265,6 +464,13 @@ static void prv_select_click(MenuLayer *menu_layer, MenuIndex *cell_index, void 
     return;
   }
 
+  if ((size_t)cell_index->row >= s_job_count) {
+    prv_set_status("Loading more", CodexSyncSyncing);
+    prv_send_message(CODEX_MSG_LOAD_MORE, "");
+    prv_reload_menu();
+    return;
+  }
+
   s_selected_job = cell_index->row;
   if (!s_detail_window) {
     s_detail_window = window_create();
@@ -272,8 +478,10 @@ static void prv_select_click(MenuLayer *menu_layer, MenuIndex *cell_index, void 
       .load = prv_detail_window_load,
       .unload = prv_detail_window_unload,
     });
+    window_set_click_config_provider(s_detail_window, prv_detail_click_config_provider);
   }
   window_stack_push(s_detail_window, true);
+  prv_request_selected_detail();
 }
 
 static void prv_reload_menu(void) {
@@ -320,7 +528,14 @@ static void prv_init(void) {
   app_message_register_inbox_received(prv_inbox_received);
   app_message_register_inbox_dropped(prv_inbox_dropped);
   app_message_register_outbox_failed(prv_outbox_failed);
-  app_message_open(512, 512);
+  app_message_open(1024, 512);
+
+#if defined(PBL_MICROPHONE)
+  s_dictation_session = dictation_session_create(CODEX_REPLY_LENGTH, prv_dictation_callback, NULL);
+  if (s_dictation_session) {
+    dictation_session_enable_confirmation(s_dictation_session, false);
+  }
+#endif
 
   s_main_window = window_create();
   window_set_window_handlers(s_main_window, (WindowHandlers){
@@ -341,6 +556,12 @@ static void prv_deinit(void) {
     window_destroy(s_detail_window);
     s_detail_window = NULL;
   }
+#if defined(PBL_MICROPHONE)
+  if (s_dictation_session) {
+    dictation_session_destroy(s_dictation_session);
+    s_dictation_session = NULL;
+  }
+#endif
   if (s_main_window) {
     window_destroy(s_main_window);
     s_main_window = NULL;

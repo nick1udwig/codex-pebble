@@ -11,12 +11,16 @@ var Key = Object.freeze({
 var MessageType = Object.freeze({
   appReady: "app_ready",
   refresh: "refresh",
+  loadMore: "load_more",
   openConfig: "open_config",
+  detailRequest: "detail_request",
+  reply: "reply",
   settingsState: "settings_state",
   syncStatus: "sync_status",
   jobClear: "job_clear",
   jobItem: "job_item",
   jobComplete: "job_complete",
+  detailUpdate: "detail_update",
   error: "error"
 });
 
@@ -42,13 +46,17 @@ var SOURCE_KINDS = [
 var ProtocolByteLimit = Object.freeze({
   title: 47,
   detail: 95,
-  payload: 220
+  body: 360,
+  payload: 460
 });
+
+var MAX_WATCH_ROWS = 16;
 
 var sendQueue = [];
 var sending = false;
 var syncInFlight = false;
 var currentClient = null;
+var activeListLimit = 0;
 
 Pebble.addEventListener("ready", function() {
   sendSettingsState();
@@ -59,11 +67,17 @@ Pebble.addEventListener("appmessage", function(event) {
 
   if (type === MessageType.appReady) {
     sendSettingsState();
-    syncJobs();
+    syncJobs({ reset: true });
   } else if (type === MessageType.refresh) {
     syncJobs();
+  } else if (type === MessageType.loadMore) {
+    syncJobs({ loadMore: true });
   } else if (type === MessageType.openConfig) {
     openConfiguration();
+  } else if (type === MessageType.detailRequest) {
+    requestThreadDetail(readPayloadValue(event.payload, Key.payload, "Payload"));
+  } else if (type === MessageType.reply) {
+    submitReply(readPayloadValue(event.payload, Key.payload, "Payload"));
   }
 });
 
@@ -81,8 +95,9 @@ Pebble.addEventListener("webviewclosed", function(event) {
 
   try {
     saveSettings(JSON.parse(decoded));
+    activeListLimit = 0;
     sendSettingsState();
-    syncJobs();
+    syncJobs({ reset: true });
   } catch (error) {
     log("Config parse failed", error);
     sendError("Bad config");
@@ -94,7 +109,8 @@ function openConfiguration() {
   Pebble.openURL(CONFIG_URL + separator + "settings=" + encodeURIComponent(JSON.stringify(loadSettings())));
 }
 
-function syncJobs() {
+function syncJobs(options) {
+  options = options || {};
   var settings = loadSettings();
   if (!settings.wsUrl) {
     sendSettingsState();
@@ -105,9 +121,14 @@ function syncJobs() {
   if (syncInFlight)
     return;
 
+  if (!activeListLimit || options.reset)
+    activeListLimit = settings.displayLimit;
+  if (options.loadMore)
+    activeListLimit = Math.min(MAX_WATCH_ROWS, activeListLimit + settings.displayLimit);
+
   syncInFlight = true;
   sendSettingsState();
-  sendStatus("Syncing", SyncState.syncing);
+  sendStatus(options.loadMore ? "Loading more" : "Syncing", SyncState.syncing);
   sendEnvelope(MessageType.jobClear, "", 0, SyncState.syncing);
   log("Sync starting", settings.wsUrl);
 
@@ -118,7 +139,7 @@ function syncJobs() {
   currentClient.connect()
     .then(function() {
       return currentClient.request("thread/list", {
-        limit: settings.displayLimit,
+        limit: activeListLimit,
         sortKey: "updated_at",
         archived: false,
         sourceKinds: SOURCE_KINDS,
@@ -127,7 +148,7 @@ function syncJobs() {
     })
     .then(function(result) {
       var threads = result.data || result.threads || [];
-      sendJobs(threads, settings);
+      sendJobs(threads, settings, result);
       currentClient.close();
       currentClient = null;
       syncInFlight = false;
@@ -142,22 +163,23 @@ function syncJobs() {
     });
 }
 
-function sendJobs(threads, settings) {
-  var count = Math.min(threads.length, settings.displayLimit);
+function sendJobs(threads, settings, result) {
+  var count = Math.min(threads.length, MAX_WATCH_ROWS);
+  var hasMore = Boolean(result && result.nextCursor && count < MAX_WATCH_ROWS);
   var index;
 
   for (index = 0; index < count; index += 1)
     sendJobItem(threads[index]);
 
-  sendEnvelope(MessageType.jobComplete, String(count), 0, SyncState.synced);
+  sendEnvelope(MessageType.jobComplete, [String(count), hasMore ? "1" : "0"].join("|"), 0, SyncState.synced);
   log("Sync complete", count + " jobs");
 }
 
 function sendJobItem(thread) {
   var id = sanitizeField(thread.id || thread.sessionId || "", 36);
   var kind = sanitizeField(threadStatusText(thread), 15);
-  var title = sanitizeField(thread.name || thread.preview || thread.cwd || "Codex thread", ProtocolByteLimit.title);
-  var detail = sanitizeField(jobDetail(thread), ProtocolByteLimit.detail);
+  var title = sanitizeField(thread.name || firstLine(thread.preview) || thread.cwd || "Codex thread", ProtocolByteLimit.title);
+  var detail = sanitizeField(listDetail(thread), ProtocolByteLimit.detail);
 
   sendEnvelope(
     MessageType.jobItem,
@@ -167,19 +189,19 @@ function sendJobItem(thread) {
   );
 }
 
-function jobDetail(thread) {
+function listDetail(thread) {
   var parts = [];
   var status = threadStatusText(thread);
   var source = thread.source || "";
   var cwd = basename(thread.cwd || "");
 
-  if (status)
+  if (status && status !== "notLoaded")
     parts.push(status);
   if (source)
     parts.push(source);
   if (cwd)
     parts.push(cwd);
-  return parts.join(" - ") || "Codex";
+  return parts.join(" - ") || "Open for latest content";
 }
 
 function threadStatusText(thread) {
@@ -195,6 +217,187 @@ function basename(path) {
   var text = String(path || "");
   var parts = text.split("/");
   return parts[parts.length - 1] || text;
+}
+
+function firstLine(text) {
+  return String(text || "").split(/\r?\n/)[0];
+}
+
+function requestThreadDetail(threadId) {
+  threadId = sanitizeField(threadId, 64);
+  if (!threadId)
+    return;
+
+  sendStatus("Loading thread", SyncState.syncing);
+  runCodexRequest("Thread detail", function(client) {
+    return client.request("thread/read", {
+      threadId: threadId,
+      includeTurns: true
+    });
+  }).then(function(result) {
+    sendDetailUpdate(threadId, result.thread || result);
+  }).catch(function(error) {
+    log("Thread detail failed", error);
+    sendError(humanError(error));
+  });
+}
+
+function submitReply(payload) {
+  var fields = splitPayload(payload || "");
+  var threadId = sanitizeField(fields[0], 64);
+  var text = String(fields[1] || "").trim();
+
+  if (!threadId || !text) {
+    sendError("Empty reply");
+    return;
+  }
+
+  sendStatus("Sending reply", SyncState.syncing);
+  runCodexRequest("Reply", function(client) {
+    return client.request("thread/read", {
+      threadId: threadId,
+      includeTurns: true
+    }).then(function(result) {
+      var thread = result.thread || result;
+      var activeTurn = latestInProgressTurn(thread);
+      var input = [{
+        type: "text",
+        text: text,
+        text_elements: []
+      }];
+
+      if (activeTurn) {
+        return client.request("turn/steer", {
+          threadId: threadId,
+          input: input,
+          expectedTurnId: activeTurn.id
+        });
+      }
+
+      return client.request("turn/start", {
+        threadId: threadId,
+        input: input
+      });
+    }).then(function() {
+      sendStatus("Reply sent", SyncState.synced);
+      return client.request("thread/read", {
+        threadId: threadId,
+        includeTurns: true
+      });
+    });
+  }).then(function(result) {
+    sendDetailUpdate(threadId, result.thread || result);
+    syncJobs();
+  }).catch(function(error) {
+    log("Reply failed", error);
+    sendError(humanError(error));
+  });
+}
+
+function runCodexRequest(label, callback) {
+  var settings = loadSettings();
+  var client;
+
+  if (!settings.wsUrl)
+    return Promise.reject(new Error("Set server URL"));
+
+  client = new JsonRpcClient(settings.wsUrl);
+  log(label + " starting", settings.wsUrl);
+  return client.connect().then(function() {
+    return callback(client);
+  }).then(function(result) {
+    client.close();
+    return result;
+  }, function(error) {
+    client.close();
+    throw error;
+  });
+}
+
+function sendDetailUpdate(threadId, thread) {
+  sendEnvelope(
+    MessageType.detailUpdate,
+    truncateUtf8([sanitizeField(threadId, 64), sanitizeBody(threadBody(thread), ProtocolByteLimit.body)].join("|"), ProtocolByteLimit.payload),
+    0,
+    SyncState.synced
+  );
+}
+
+function threadBody(thread) {
+  var turns = thread && Array.isArray(thread.turns) ? thread.turns : [];
+  var lines = [];
+  var turnIndex;
+  var itemIndex;
+  var item;
+  var summary;
+
+  for (turnIndex = turns.length - 1; turnIndex >= 0 && lines.length < 5; turnIndex -= 1) {
+    if (!Array.isArray(turns[turnIndex].items))
+      continue;
+    for (itemIndex = turns[turnIndex].items.length - 1; itemIndex >= 0 && lines.length < 5; itemIndex -= 1) {
+      item = turns[turnIndex].items[itemIndex];
+      summary = threadItemSummary(item);
+      if (summary)
+        lines.unshift(summary);
+    }
+  }
+
+  if (!lines.length && thread && thread.preview)
+    lines.push("Thread: " + thread.preview);
+  if (!lines.length)
+    lines.push("No loaded messages yet");
+
+  return lines.join("\n\n");
+}
+
+function threadItemSummary(item) {
+  if (!item || !item.type)
+    return "";
+
+  if (item.type === "agentMessage")
+    return "Codex: " + item.text;
+  if (item.type === "userMessage")
+    return "You: " + userInputText(item.content);
+  if (item.type === "plan")
+    return "Plan: " + item.text;
+  if (item.type === "commandExecution")
+    return "$ " + item.command + (item.status ? " (" + item.status + ")" : "");
+  if (item.type === "fileChange")
+    return "Files changed: " + item.status;
+  if (item.type === "mcpToolCall")
+    return "Tool: " + item.server + "/" + item.tool + (item.status ? " (" + item.status + ")" : "");
+  if (item.type === "dynamicToolCall")
+    return "Tool: " + (item.namespace ? item.namespace + "/" : "") + item.tool;
+  if (item.type === "reasoning" && item.summary && item.summary.length)
+    return "Reasoning: " + item.summary.join(" ");
+  if (item.type === "contextCompaction")
+    return "Context compacted";
+  return "";
+}
+
+function userInputText(content) {
+  var parts = [];
+  var index;
+
+  if (!Array.isArray(content))
+    return "";
+
+  for (index = 0; index < content.length; index += 1) {
+    if (content[index] && content[index].type === "text")
+      parts.push(content[index].text || "");
+  }
+
+  return parts.join(" ");
+}
+
+function latestInProgressTurn(thread) {
+  var turns = thread && Array.isArray(thread.turns) ? thread.turns : [];
+  var index;
+  for (index = turns.length - 1; index >= 0; index -= 1) {
+    if (turns[index] && turns[index].status === "inProgress")
+      return turns[index];
+  }
+  return null;
 }
 
 function sendSettingsState() {
@@ -299,6 +502,26 @@ function sanitizeField(value, maxBytes) {
       .trim(),
     maxBytes
   );
+}
+
+function sanitizeBody(value, maxBytes) {
+  return truncateUtf8(
+    String(value == null ? "" : value)
+      .replace(/\|/g, "/")
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim(),
+    maxBytes
+  );
+}
+
+function splitPayload(payload) {
+  var text = String(payload || "");
+  var separator = text.indexOf("|");
+  if (separator === -1)
+    return [text, ""];
+  return [text.slice(0, separator), text.slice(separator + 1)];
 }
 
 function truncateUtf8(value, maxBytes) {
