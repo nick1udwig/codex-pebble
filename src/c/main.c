@@ -13,6 +13,8 @@
 #define CODEX_BODY_LENGTH 384
 #define CODEX_REPLY_LENGTH 256
 #define CODEX_STATUS_LENGTH 64
+#define CODEX_DETAIL_TEXT_MEASURE_HEIGHT 1200
+#define CODEX_DETAIL_TEXT_PADDING 4
 
 #define CODEX_MSG_APP_READY "app_ready"
 #define CODEX_MSG_REFRESH "refresh"
@@ -47,6 +49,7 @@ typedef struct {
 static Window *s_main_window;
 static Window *s_detail_window;
 static MenuLayer *s_menu_layer;
+static ScrollLayer *s_detail_scroll_layer;
 static TextLayer *s_status_layer;
 static TextLayer *s_detail_title_layer;
 static TextLayer *s_detail_body_layer;
@@ -69,6 +72,8 @@ static void prv_send_message(const char *type, const char *payload);
 static void prv_reload_menu(void);
 static void prv_copy_string(char *dest, size_t dest_size, const char *src);
 static void prv_update_detail_layers(void);
+static void prv_update_detail_scroll(bool scroll_to_bottom);
+static void prv_detail_click_config_provider(void *context);
 
 static void prv_copy_string(char *dest, size_t dest_size, const char *src) {
   if (!dest || dest_size == 0) {
@@ -333,6 +338,7 @@ static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
 
 static void prv_update_detail_layers(void) {
   CodexJob *job = (s_selected_job >= 0 && (size_t)s_selected_job < s_job_count) ? &s_jobs[s_selected_job] : NULL;
+  bool scroll_to_bottom = false;
 
   if (s_detail_title_layer) {
     text_layer_set_text(s_detail_title_layer, job ? job->title : "Codex Job");
@@ -344,14 +350,57 @@ static void prv_update_detail_layers(void) {
       text_layer_set_text(s_detail_body_layer, "Loading thread...");
     } else {
       text_layer_set_text(s_detail_body_layer, job->has_detail ? job->body : job->detail);
+      scroll_to_bottom = job->has_detail;
     }
   }
+  prv_update_detail_scroll(scroll_to_bottom);
   if (s_detail_footer_layer) {
 #if defined(PBL_MICROPHONE)
     text_layer_set_text(s_detail_footer_layer, job ? "Select: reply" : "");
 #else
     text_layer_set_text(s_detail_footer_layer, "Reply unavailable");
 #endif
+  }
+}
+
+static void prv_update_detail_scroll(bool scroll_to_bottom) {
+  Layer *body_layer;
+  Layer *scroll_layer;
+  GRect scroll_bounds;
+  GRect body_frame;
+  GSize text_size;
+  int16_t content_height;
+  int16_t bottom_offset;
+
+  if (!s_detail_scroll_layer || !s_detail_body_layer) {
+    return;
+  }
+
+  body_layer = text_layer_get_layer(s_detail_body_layer);
+  scroll_layer = scroll_layer_get_layer(s_detail_scroll_layer);
+  scroll_bounds = layer_get_bounds(scroll_layer);
+  body_frame = layer_get_frame(body_layer);
+  body_frame.origin = GPointZero;
+  body_frame.size.w = scroll_bounds.size.w;
+  body_frame.size.h = CODEX_DETAIL_TEXT_MEASURE_HEIGHT;
+  layer_set_frame(body_layer, body_frame);
+
+  text_size = text_layer_get_content_size(s_detail_body_layer);
+  content_height = text_size.h + CODEX_DETAIL_TEXT_PADDING;
+  if (content_height < scroll_bounds.size.h) {
+    content_height = scroll_bounds.size.h;
+  }
+
+  body_frame.size.h = content_height;
+  layer_set_frame(body_layer, body_frame);
+  scroll_layer_set_content_size(s_detail_scroll_layer, GSize(scroll_bounds.size.w, content_height));
+
+  if (scroll_to_bottom) {
+    bottom_offset = content_height - scroll_bounds.size.h;
+    if (bottom_offset < 0) {
+      bottom_offset = 0;
+    }
+    scroll_layer_set_content_offset(s_detail_scroll_layer, GPoint(0, -bottom_offset), false);
   }
 }
 
@@ -367,10 +416,18 @@ static void prv_detail_window_load(Window *window) {
   text_layer_set_overflow_mode(s_detail_title_layer, GTextOverflowModeTrailingEllipsis);
   layer_add_child(root, text_layer_get_layer(s_detail_title_layer));
 
-  s_detail_body_layer = text_layer_create(body_frame);
+  s_detail_scroll_layer = scroll_layer_create(body_frame);
+  scroll_layer_set_callbacks(s_detail_scroll_layer, (ScrollLayerCallbacks) {
+    .click_config_provider = prv_detail_click_config_provider,
+  });
+  scroll_layer_set_click_config_onto_window(s_detail_scroll_layer, window);
+  layer_add_child(root, scroll_layer_get_layer(s_detail_scroll_layer));
+
+  s_detail_body_layer = text_layer_create(GRect(0, 0, body_frame.size.w, body_frame.size.h));
   text_layer_set_font(s_detail_body_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
   text_layer_set_overflow_mode(s_detail_body_layer, GTextOverflowModeWordWrap);
-  layer_add_child(root, text_layer_get_layer(s_detail_body_layer));
+  text_layer_set_background_color(s_detail_body_layer, GColorClear);
+  scroll_layer_add_child(s_detail_scroll_layer, text_layer_get_layer(s_detail_body_layer));
 
   s_detail_footer_layer = text_layer_create(footer_frame);
   text_layer_set_font(s_detail_footer_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
@@ -383,9 +440,11 @@ static void prv_detail_window_load(Window *window) {
 static void prv_detail_window_unload(Window *window) {
   text_layer_destroy(s_detail_title_layer);
   text_layer_destroy(s_detail_body_layer);
+  scroll_layer_destroy(s_detail_scroll_layer);
   text_layer_destroy(s_detail_footer_layer);
   s_detail_title_layer = NULL;
   s_detail_body_layer = NULL;
+  s_detail_scroll_layer = NULL;
   s_detail_footer_layer = NULL;
 }
 
@@ -478,7 +537,6 @@ static void prv_select_click(MenuLayer *menu_layer, MenuIndex *cell_index, void 
       .load = prv_detail_window_load,
       .unload = prv_detail_window_unload,
     });
-    window_set_click_config_provider(s_detail_window, prv_detail_click_config_provider);
   }
   window_stack_push(s_detail_window, true);
   prv_request_selected_detail();
