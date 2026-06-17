@@ -175,6 +175,12 @@ describe("native C PKJS bridge", () => {
         displayLimit: 2,
         recentCompletionLookbackMinutes: 720,
       }),
+    }, {
+      threadReadFixture(threadId, readCount) {
+        if (threadId === "thr_1" && readCount > 1)
+          return completedThreadFixture(threadId, "Focus noted.");
+        return threadReadFixture(threadId);
+      },
     });
 
     harness.listeners.appmessage({ payload: { 0: "reply", 1: "thr_1|focus on tests" } });
@@ -190,6 +196,47 @@ describe("native C PKJS bridge", () => {
       expectedTurnId: "turn_active",
       input: [{ type: "text", text: "focus on tests", text_elements: [] }],
     });
+  });
+
+  it("polls thread detail after a dictated reply until the Codex result is visible", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = loadPkjs({
+        codexJobsSettings: JSON.stringify({
+          wsUrl: "ws://127.0.0.1:4501",
+          displayLimit: 2,
+          recentCompletionLookbackMinutes: 720,
+        }),
+      }, {
+        threadReadFixture(threadId, readCount) {
+          if (threadId !== "thr_2")
+            return threadReadFixture(threadId);
+          if (readCount === 1)
+            return threadReadFixture(threadId);
+          if (readCount === 2)
+            return activeReplyThreadFixture(threadId);
+          return completedThreadFixture(threadId, "Continued with the fix.");
+        },
+      });
+
+      harness.listeners.appmessage({ payload: { 0: "reply", 1: "thr_2|please continue" } });
+      harness.webSockets[0].open();
+
+      await vi.waitFor(() => {
+        expect(lastMessageOfType(harness, "detail_update")?.[1]).toContain("You: please continue");
+      });
+
+      await vi.advanceTimersByTimeAsync(3000);
+      harness.webSockets.at(-1).open();
+
+      await vi.waitFor(() => {
+        expect(lastMessageOfType(harness, "detail_update")?.[1]).toContain("Codex: Continued with the fix.");
+      });
+      expect(harness.threadReadCounts.thr_2).toBe(3);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it("logs websocket close details for failed connections", async () => {
@@ -222,12 +269,13 @@ function lastMessageOfType(harness, type) {
   return harness.sentMessages.filter(message => message[0] === type).at(-1);
 }
 
-function loadPkjs(initialStorage = {}) {
+function loadPkjs(initialStorage = {}, options = {}) {
   const listeners = {};
   const openedUrls = [];
   const sentMessages = [];
   const webSockets = [];
   const storage = new Map(Object.entries(initialStorage));
+  const threadReadCounts = {};
   const threads = [
     {
       id: "thr_1",
@@ -284,9 +332,15 @@ function loadPkjs(initialStorage = {}) {
           },
         }) });
       } else if (message.method === "thread/read") {
+        const threadId = message.params.threadId;
+        threadReadCounts[threadId] = (threadReadCounts[threadId] || 0) + 1;
         this.onmessage({ data: JSON.stringify({
           id: message.id,
-          result: { thread: threadReadFixture(message.params.threadId) },
+          result: {
+            thread: options.threadReadFixture
+              ? options.threadReadFixture(threadId, threadReadCounts[threadId])
+              : threadReadFixture(threadId),
+          },
         }) });
       } else if (message.method === "turn/start") {
         this.onmessage({ data: JSON.stringify({
@@ -355,6 +409,7 @@ function loadPkjs(initialStorage = {}) {
     logs,
     openedUrls,
     sentMessages,
+    threadReadCounts,
     webSockets,
   };
 }
@@ -399,6 +454,49 @@ function threadReadFixture(threadId) {
           type: "agentMessage",
           id: "item_4",
           text: "Added the bridge tests.",
+        },
+      ],
+    }],
+  };
+}
+
+function activeReplyThreadFixture(threadId) {
+  return {
+    id: threadId,
+    status: { type: "active" },
+    preview: "Review tests in detail",
+    turns: [{
+      id: "turn_new",
+      status: "inProgress",
+      items: [
+        {
+          type: "userMessage",
+          id: "item_reply_user",
+          content: [{ type: "text", text: "please continue", text_elements: [] }],
+        },
+      ],
+    }],
+  };
+}
+
+function completedThreadFixture(threadId, text) {
+  return {
+    id: threadId,
+    status: { type: "idle" },
+    preview: "Review tests in detail",
+    turns: [{
+      id: "turn_done",
+      status: "completed",
+      items: [
+        {
+          type: "userMessage",
+          id: "item_reply_user",
+          content: [{ type: "text", text: "please continue", text_elements: [] }],
+        },
+        {
+          type: "agentMessage",
+          id: "item_reply_agent",
+          text,
         },
       ],
     }],

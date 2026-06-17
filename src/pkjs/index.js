@@ -51,12 +51,19 @@ var ProtocolByteLimit = Object.freeze({
 });
 
 var MAX_WATCH_ROWS = 16;
+var DETAIL_POLL_INTERVAL_MS = 3000;
+var DETAIL_POLL_MAX_ATTEMPTS = 20;
 
 var sendQueue = [];
 var sending = false;
 var syncInFlight = false;
 var currentClient = null;
 var activeListLimit = 0;
+var activeDetailThreadId = "";
+var detailPollTimer = null;
+var detailPollAttempts = 0;
+var detailPollInFlight = false;
+var lastDetailBodyByThreadId = {};
 
 Pebble.addEventListener("ready", function() {
   sendSettingsState();
@@ -228,6 +235,7 @@ function requestThreadDetail(threadId) {
   if (!threadId)
     return;
 
+  setActiveDetailThread(threadId);
   sendStatus("Loading thread", SyncState.syncing);
   runCodexRequest("Thread detail", function(client) {
     return client.request("thread/read", {
@@ -235,7 +243,10 @@ function requestThreadDetail(threadId) {
       includeTurns: true
     });
   }).then(function(result) {
-    sendDetailUpdate(threadId, result.thread || result);
+    var thread = result.thread || result;
+    sendDetailUpdate(threadId, thread);
+    if (threadNeedsFollowup(thread))
+      scheduleDetailPoll(threadId, true);
   }).catch(function(error) {
     log("Thread detail failed", error);
     sendError(humanError(error));
@@ -252,6 +263,7 @@ function submitReply(payload) {
     return;
   }
 
+  setActiveDetailThread(threadId);
   sendStatus("Sending reply", SyncState.syncing);
   runCodexRequest("Reply", function(client) {
     return client.request("thread/read", {
@@ -286,8 +298,12 @@ function submitReply(payload) {
       });
     });
   }).then(function(result) {
-    sendDetailUpdate(threadId, result.thread || result);
-    syncJobs();
+    var thread = result.thread || result;
+    sendDetailUpdate(threadId, thread);
+    if (threadNeedsFollowup(thread))
+      scheduleDetailPoll(threadId, true);
+    else
+      syncJobs();
   }).catch(function(error) {
     log("Reply failed", error);
     sendError(humanError(error));
@@ -315,12 +331,107 @@ function runCodexRequest(label, callback) {
 }
 
 function sendDetailUpdate(threadId, thread) {
+  var body = threadBody(thread);
+  lastDetailBodyByThreadId[threadId] = body;
   sendEnvelope(
     MessageType.detailUpdate,
-    truncateUtf8([sanitizeField(threadId, 64), sanitizeBody(threadBody(thread), ProtocolByteLimit.body)].join("|"), ProtocolByteLimit.payload),
+    truncateUtf8([sanitizeField(threadId, 64), sanitizeBody(body, ProtocolByteLimit.body)].join("|"), ProtocolByteLimit.payload),
     0,
     SyncState.synced
   );
+}
+
+function sendDetailUpdateIfChanged(threadId, thread) {
+  var body = threadBody(thread);
+  if (lastDetailBodyByThreadId[threadId] === body)
+    return false;
+
+  lastDetailBodyByThreadId[threadId] = body;
+  sendEnvelope(
+    MessageType.detailUpdate,
+    truncateUtf8([sanitizeField(threadId, 64), sanitizeBody(body, ProtocolByteLimit.body)].join("|"), ProtocolByteLimit.payload),
+    0,
+    SyncState.synced
+  );
+  return true;
+}
+
+function setActiveDetailThread(threadId) {
+  if (activeDetailThreadId === threadId)
+    return;
+
+  activeDetailThreadId = threadId;
+  detailPollAttempts = 0;
+  detailPollInFlight = false;
+  if (detailPollTimer) {
+    clearTimeout(detailPollTimer);
+    detailPollTimer = null;
+  }
+}
+
+function scheduleDetailPoll(threadId, resetAttempts) {
+  if (threadId !== activeDetailThreadId)
+    return;
+
+  if (resetAttempts)
+    detailPollAttempts = 0;
+
+  if (detailPollTimer)
+    clearTimeout(detailPollTimer);
+
+  detailPollTimer = setTimeout(function() {
+    detailPollTimer = null;
+    pollThreadDetail(threadId);
+  }, DETAIL_POLL_INTERVAL_MS);
+}
+
+function pollThreadDetail(threadId) {
+  if (threadId !== activeDetailThreadId)
+    return;
+
+  if (detailPollInFlight) {
+    scheduleDetailPoll(threadId, false);
+    return;
+  }
+
+  if (detailPollAttempts >= DETAIL_POLL_MAX_ATTEMPTS) {
+    log("Thread detail polling stopped", threadId);
+    syncJobs();
+    return;
+  }
+
+  detailPollAttempts += 1;
+  detailPollInFlight = true;
+  runCodexRequest("Thread detail poll", function(client) {
+    return client.request("thread/read", {
+      threadId: threadId,
+      includeTurns: true
+    });
+  }).then(function(result) {
+    var thread = result.thread || result;
+    detailPollInFlight = false;
+
+    if (threadId !== activeDetailThreadId)
+      return;
+
+    sendDetailUpdateIfChanged(threadId, thread);
+    if (threadNeedsFollowup(thread))
+      scheduleDetailPoll(threadId, false);
+    else
+      syncJobs();
+  }).catch(function(error) {
+    detailPollInFlight = false;
+    log("Thread detail poll failed", error);
+    if (detailPollAttempts < DETAIL_POLL_MAX_ATTEMPTS)
+      scheduleDetailPoll(threadId, false);
+    else
+      sendError(humanError(error));
+  });
+}
+
+function threadNeedsFollowup(thread) {
+  var status = threadStatusText(thread);
+  return status === "active" || status === "running" || Boolean(latestInProgressTurn(thread));
 }
 
 function threadBody(thread) {

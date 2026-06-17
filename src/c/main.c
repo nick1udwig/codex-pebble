@@ -51,7 +51,6 @@ static Window *s_detail_window;
 static MenuLayer *s_menu_layer;
 static ScrollLayer *s_detail_scroll_layer;
 static TextLayer *s_status_layer;
-static TextLayer *s_detail_title_layer;
 static TextLayer *s_detail_body_layer;
 static TextLayer *s_detail_footer_layer;
 static AppTimer *s_ready_timer;
@@ -340,9 +339,6 @@ static void prv_update_detail_layers(void) {
   CodexJob *job = (s_selected_job >= 0 && (size_t)s_selected_job < s_job_count) ? &s_jobs[s_selected_job] : NULL;
   bool scroll_to_bottom = false;
 
-  if (s_detail_title_layer) {
-    text_layer_set_text(s_detail_title_layer, job ? job->title : "Codex Job");
-  }
   if (s_detail_body_layer) {
     if (!job) {
       text_layer_set_text(s_detail_body_layer, "No details");
@@ -407,14 +403,8 @@ static void prv_update_detail_scroll(bool scroll_to_bottom) {
 static void prv_detail_window_load(Window *window) {
   Layer *root = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(root);
-  GRect title_frame = GRect(4, 4, bounds.size.w - 8, 42);
   GRect footer_frame = GRect(0, bounds.size.h - 20, bounds.size.w, 20);
-  GRect body_frame = GRect(4, 48, bounds.size.w - 8, bounds.size.h - 72);
-
-  s_detail_title_layer = text_layer_create(title_frame);
-  text_layer_set_font(s_detail_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
-  text_layer_set_overflow_mode(s_detail_title_layer, GTextOverflowModeTrailingEllipsis);
-  layer_add_child(root, text_layer_get_layer(s_detail_title_layer));
+  GRect body_frame = GRect(4, 4, bounds.size.w - 8, bounds.size.h - 28);
 
   s_detail_scroll_layer = scroll_layer_create(body_frame);
   scroll_layer_set_callbacks(s_detail_scroll_layer, (ScrollLayerCallbacks) {
@@ -438,11 +428,9 @@ static void prv_detail_window_load(Window *window) {
 }
 
 static void prv_detail_window_unload(Window *window) {
-  text_layer_destroy(s_detail_title_layer);
   text_layer_destroy(s_detail_body_layer);
   scroll_layer_destroy(s_detail_scroll_layer);
   text_layer_destroy(s_detail_footer_layer);
-  s_detail_title_layer = NULL;
   s_detail_body_layer = NULL;
   s_detail_scroll_layer = NULL;
   s_detail_footer_layer = NULL;
@@ -466,6 +454,21 @@ static void prv_send_reply_text(const char *text) {
 }
 
 #if defined(PBL_MICROPHONE)
+static const char *prv_dictation_status_text(DictationSessionStatus status) {
+  switch (status) {
+    case DictationSessionStatusFailureTranscriptionRejected:
+      return "Reply canceled";
+    case DictationSessionStatusFailureNoSpeechDetected:
+      return "No speech detected";
+    case DictationSessionStatusFailureConnectivityError:
+      return "Voice connection failed";
+    case DictationSessionStatusFailureDisabled:
+      return "Voice disabled";
+    default:
+      return "Voice input failed";
+  }
+}
+
 static void prv_dictation_callback(DictationSession *session, DictationSessionStatus status, char *transcription,
                                    void *context) {
   (void)session;
@@ -473,7 +476,7 @@ static void prv_dictation_callback(DictationSession *session, DictationSessionSt
 
   if (status != DictationSessionStatusSuccess || !transcription || !transcription[0]) {
     if (s_detail_footer_layer) {
-      text_layer_set_text(s_detail_footer_layer, "Voice input failed");
+      text_layer_set_text(s_detail_footer_layer, prv_dictation_status_text(status));
     }
     return;
   }
@@ -591,7 +594,7 @@ static void prv_init(void) {
 #if defined(PBL_MICROPHONE)
   s_dictation_session = dictation_session_create(CODEX_REPLY_LENGTH, prv_dictation_callback, NULL);
   if (s_dictation_session) {
-    dictation_session_enable_confirmation(s_dictation_session, false);
+    dictation_session_enable_confirmation(s_dictation_session, true);
   }
 #endif
 
