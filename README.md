@@ -101,6 +101,7 @@ npm run deploy:phone
 - `.github/workflows/pages.yml` builds `docs/config` from `src/config` and deploys GitHub Pages.
 - `.github/workflows/public-build.yml` builds a release `.pbw` and uploads it as a workflow artifact.
 - `.github/workflows/pre-release.yml` runs JS tests, config-page tests, sidecar tests, and a watch build.
+- `.github/workflows/release.yml` manually bumps the version, tags `vX.Y.Z`, and publishes the release `.pbw` plus Linux, macOS, and Windows sidecar binaries.
 
 Set GitHub Pages to `GitHub Actions` under repository settings before relying on the Pages workflow.
 

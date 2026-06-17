@@ -30,6 +30,20 @@ The release script minifies `pebble-js-app.js`, removes the source map from the 
 build/codex-pebble-release.pbw
 ```
 
+## Sidecar Binaries
+
+Build release archives for the Go sidecar with:
+
+```sh
+npm run build:sidecar:release -- v0.1.0
+```
+
+That writes Linux, macOS, and Windows archives plus `checksums.txt` to:
+
+```text
+build/sidecar-release/
+```
+
 ## Codex Schemas
 
 Refresh generated app-server contracts when updating the Codex version used for
@@ -48,6 +62,7 @@ generated contracts.
 - `.github/workflows/pages.yml` deploys `docs/` through GitHub Pages.
 - `.github/workflows/public-build.yml` uploads `build/codex-pebble-release.pbw`, `build/appinfo.json`, and `docs/config`.
 - `.github/workflows/pre-release.yml` runs the local pre-release gate on pushes and pull requests.
+- `.github/workflows/release.yml` manually bumps `package.json`, commits and tags `vX.Y.Z`, then publishes a GitHub release with the public `.pbw` and sidecar binaries.
 
 ## GitHub Pages Setup
 

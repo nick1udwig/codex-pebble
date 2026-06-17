@@ -18,6 +18,7 @@
     "smoke:app-server": "node scripts/smoke-app-server.mjs",
     "dev:sidecar": "go run ./cmd/codex-pebble-sidecar",
     "build:sidecar": "go build -o build/codex-pebble-sidecar ./cmd/codex-pebble-sidecar",
+    "build:sidecar:release": "bash scripts/build-sidecar-release.sh",
     "dev:relay": "node scripts/codex-ws-origin-relay.mjs",
     "dev:config": "node scripts/serve-config-page.mjs --port 4173",
     "build:config:docs": "node scripts/build-config-docs.mjs",

@@ -95,6 +95,17 @@ func TestCLIHelp(t *testing.T) {
 	}
 }
 
+func TestCLIVersion(t *testing.T) {
+	var out bytes.Buffer
+	exit := RunCLI([]string{"--version"}, &out, io.Discard)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0", exit)
+	}
+	if strings.TrimSpace(out.String()) != "codex-pebble-sidecar "+Version {
+		t.Fatalf("version output = %q", out.String())
+	}
+}
+
 type fakeUpstream struct {
 	sent   chan []byte
 	recv   chan []byte

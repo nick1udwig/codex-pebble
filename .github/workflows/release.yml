@@ -1,0 +1,163 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump to apply before releasing
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      prerelease:
+        description: Mark the GitHub release as a prerelease
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require master branch
+        run: |
+          if [[ "${GITHUB_REF_NAME}" != "master" ]]; then
+            echo "Release workflow must run from master, got ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install Ubuntu dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libsdl1.2debian \
+            libfdt1 \
+            python3.12-venv \
+            unzip \
+            zip
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Install pebble-tool
+        run: |
+          uv tool install pebble-tool --python 3.12
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install Pebble SDK
+        run: pebble sdk install latest
+
+      - name: Configure release git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump package version
+        id: version
+        run: |
+          old_version="$(node -p "require('./package.json').version")"
+          npm version "${{ inputs.bump }}" --no-git-tag-version
+          new_version="$(node -p "require('./package.json').version")"
+          tag="v${new_version}"
+
+          git fetch --tags --force
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "Tag ${tag} already exists" >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "Remote tag ${tag} already exists" >&2
+            exit 1
+          fi
+
+          echo "old_version=${old_version}" >> "$GITHUB_OUTPUT"
+          echo "version=${new_version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Run pre-release gate
+        run: npm run test:pre-release
+
+      - name: Commit version bump and tag
+        run: |
+          git add package.json package-lock.json
+          git commit -m "Release ${{ steps.version.outputs.tag }}"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "${{ steps.version.outputs.tag }}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      - name: Build public watch package
+        run: npm run build:watch:release
+
+      - name: Build sidecar release archives
+        run: scripts/build-sidecar-release.sh "${{ steps.version.outputs.tag }}" build/sidecar-release
+
+      - name: Write release notes
+        run: |
+          mkdir -p build
+          cat > build/release-notes.md <<'EOF'
+          Codex Pebble release ${{ steps.version.outputs.tag }}
+
+          Version: ${{ steps.version.outputs.old_version }} -> ${{ steps.version.outputs.version }}
+
+          Assets:
+          - codex-pebble-release.pbw
+          - codex-pebble-sidecar binaries for Linux, macOS, and Windows
+          - checksums.txt for sidecar archives
+          EOF
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_flags=()
+          if [[ "${{ inputs.prerelease }}" == "true" ]]; then
+            release_flags+=(--prerelease)
+          fi
+
+          gh release create "${{ steps.version.outputs.tag }}" \
+            build/codex-pebble-release.pbw \
+            build/appinfo.json \
+            build/sidecar-release/* \
+            --title "${{ steps.version.outputs.tag }}" \
+            --notes-file build/release-notes.md \
+            "${release_flags[@]}"

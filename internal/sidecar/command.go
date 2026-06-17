@@ -14,6 +14,8 @@ import (
 	"time"
 )
 
+var Version = "dev"
+
 func RunCLI(args []string, stdout, stderr io.Writer) int {
 	logger := log.New(stderr, "", log.LstdFlags)
 	cfg := Config{}
@@ -25,12 +27,17 @@ func RunCLI(args []string, stdout, stderr io.Writer) int {
 	flags.StringVar(&cfg.UnixSocket, "unix-socket", "", "Codex app-server Unix socket path to probe before stdio")
 	timeout := flags.Duration("timeout", 10*time.Second, "upstream connect and shutdown timeout")
 	showHelp := flags.Bool("help", false, "show help")
+	showVersion := flags.Bool("version", false, "show version")
 
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if *showHelp {
 		printUsage(flags, stdout)
+		return 0
+	}
+	if *showVersion {
+		fmt.Fprintf(stdout, "codex-pebble-sidecar %s\n", Version)
 		return 0
 	}
 
