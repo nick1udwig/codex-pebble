@@ -23,6 +23,7 @@
     "build:config:docs": "node scripts/build-config-docs.mjs",
     "build:watch": "pebble build",
     "build:watch:release": "npm run build:watch && node scripts/build-release-pbw.mjs",
+    "deploy:phone": "bash scripts/build-and-install-phone.sh",
     "schemas:ts": "codex app-server generate-ts --out ./schemas",
     "schemas:json": "codex app-server generate-json-schema --out ./schemas"
   },

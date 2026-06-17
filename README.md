@@ -90,6 +90,12 @@ For an emulator smoke test:
 pebble install --emulator emery --logs
 ```
 
+For a real paired phone dev install:
+
+```sh
+npm run deploy:phone
+```
+
 ## Deployment
 
 - `.github/workflows/pages.yml` builds `docs/config` from `src/config` and deploys GitHub Pages.

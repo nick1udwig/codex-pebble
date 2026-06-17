@@ -191,6 +191,31 @@ describe("native C PKJS bridge", () => {
       input: [{ type: "text", text: "focus on tests", text_elements: [] }],
     });
   });
+
+  it("logs websocket close details for failed connections", async () => {
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 2,
+        recentCompletionLookbackMinutes: 720,
+      }),
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "app_ready" } });
+    harness.webSockets[0].failClose({
+      type: "close",
+      code: 1006,
+      reason: "abnormal",
+      wasClean: false,
+    });
+
+    await vi.waitFor(() => {
+      expect(lastMessageOfType(harness, "error")).toBeTruthy();
+    });
+
+    expect(harness.logs.some(line => line.includes("WebSocket close: type=close code=1006 reason=abnormal wasClean=false"))).toBe(true);
+    expect(harness.logs.some(line => line.includes("Sync failed: WebSocket closed: type=close code=1006 reason=abnormal wasClean=false"))).toBe(true);
+  });
 });
 
 function lastMessageOfType(harness, type) {
@@ -279,6 +304,11 @@ function loadPkjs(initialStorage = {}) {
     close() {
       this.readyState = 3;
     }
+
+    failClose(event) {
+      this.readyState = 3;
+      this.onclose(event);
+    }
   }
 
   const localStorage = {
@@ -290,9 +320,10 @@ function loadPkjs(initialStorage = {}) {
     },
   };
   const module = { exports: {} };
+  const logs = [];
   const context = vm.createContext({
     clearTimeout,
-    console: { log: vi.fn() },
+    console: { log: vi.fn(message => logs.push(String(message))) },
     localStorage,
     module,
     exports: module.exports,
@@ -321,6 +352,7 @@ function loadPkjs(initialStorage = {}) {
   return {
     listeners,
     localStorage,
+    logs,
     openedUrls,
     sentMessages,
     webSockets,

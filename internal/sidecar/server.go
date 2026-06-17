@@ -68,11 +68,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "codex-pebble sidecar expects a WebSocket upgrade", http.StatusBadRequest)
 		return
 	}
+	s.logger.Printf("websocket attempt remote=%s path=%s origin=%q", r.RemoteAddr, r.URL.Path, r.Header.Get("Origin"))
 	if !s.authorized(r) {
+		s.logger.Printf("websocket unauthorized remote=%s path=%s", r.RemoteAddr, r.URL.Path)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	if !s.active.CompareAndSwap(false, true) {
+		s.logger.Printf("websocket rejected remote=%s reason=already-connected", r.RemoteAddr)
 		http.Error(w, "another codex-pebble client is already connected", http.StatusConflict)
 		return
 	}

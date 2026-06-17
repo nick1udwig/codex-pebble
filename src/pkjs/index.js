@@ -581,6 +581,30 @@ function log(message, extra) {
     console.log("[PKJS] " + message);
 }
 
+function describeWebSocketEvent(event) {
+  var parts = [];
+  var names = ["type", "code", "reason", "wasClean", "message"];
+  var index;
+  var name;
+  var value;
+
+  if (!event)
+    return "";
+
+  for (index = 0; index < names.length; index += 1) {
+    name = names[index];
+    try {
+      value = event[name];
+    } catch (_) {
+      value = undefined;
+    }
+    if (value !== undefined && value !== null && value !== "")
+      parts.push(name + "=" + String(value));
+  }
+
+  return parts.join(" ");
+}
+
 function JsonRpcClient(url) {
   this.url = url;
   this.ws = null;
@@ -592,14 +616,27 @@ function JsonRpcClient(url) {
 JsonRpcClient.prototype.connect = function() {
   var self = this;
   return new Promise(function(resolve, reject) {
+    var settled = false;
+    function failConnect(error) {
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+      self.rejectAll(error);
+    }
+
+    log("WebSocket connecting", self.url);
     try {
       self.ws = new WebSocket(self.url);
     } catch (error) {
-      reject(error);
+      log("WebSocket constructor failed", error);
+      failConnect(error);
       return;
     }
 
     self.ws.onopen = function() {
+      log("WebSocket open", self.url);
+      log("JSON-RPC initialize sending");
       self.request("initialize", {
         clientInfo: {
           name: "repebble_codex_jobs",
@@ -610,18 +647,30 @@ JsonRpcClient.prototype.connect = function() {
           experimentalApi: true
         }
       }).then(function(result) {
+        log("JSON-RPC initialize complete");
         self.notify("initialized", {});
+        settled = true;
         resolve(result);
-      }).catch(reject);
+      }).catch(function(error) {
+        log("JSON-RPC initialize failed", error);
+        failConnect(error);
+      });
     };
     self.ws.onmessage = function(event) {
+      log("WebSocket message", event && event.data ? String(event.data).length + " bytes" : "empty");
       self.handleMessage(event.data);
     };
-    self.ws.onerror = function() {
-      reject(new Error("WebSocket error"));
+    self.ws.onerror = function(event) {
+      var detail = describeWebSocketEvent(event);
+      var error = new Error(detail ? "WebSocket error: " + detail : "WebSocket error");
+      log("WebSocket error", detail || "no event detail");
+      failConnect(error);
     };
-    self.ws.onclose = function() {
-      self.rejectAll(new Error("WebSocket closed"));
+    self.ws.onclose = function(event) {
+      var detail = describeWebSocketEvent(event);
+      var error = new Error(detail ? "WebSocket closed: " + detail : "WebSocket closed");
+      log("WebSocket close", detail || "no close detail");
+      failConnect(error);
     };
   });
 };
@@ -648,6 +697,7 @@ JsonRpcClient.prototype.notify = function(method, params) {
 JsonRpcClient.prototype.send = function(message) {
   if (!this.ws || this.ws.readyState !== 1)
     throw new Error("WebSocket is not open");
+  log("JSON-RPC send", message.method || ("id=" + message.id));
   this.ws.send(JSON.stringify(message));
 };
 
@@ -660,6 +710,8 @@ JsonRpcClient.prototype.handleMessage = function(raw) {
     log("Bad JSON-RPC message", error);
     return;
   }
+
+  log("JSON-RPC receive", message.method || ("id=" + message.id) || "notification");
 
   if (message.id === undefined)
     return;
