@@ -265,7 +265,7 @@ function sendJobs(threads, settings, result) {
 function sendJobItem(thread) {
   var id = sanitizeField(thread.id || thread.sessionId || "", ProtocolByteLimit.threadId);
   var kind = sanitizeField(threadStatusText(thread), 15);
-  var title = sanitizeField(thread.name || firstLine(thread.preview) || thread.cwd || "Codex thread", ProtocolByteLimit.title);
+  var title = sanitizeField(listTitle(thread), ProtocolByteLimit.title);
   var detail = sanitizeField(listDetail(thread), ProtocolByteLimit.detail);
 
   sendEnvelope(
@@ -276,27 +276,117 @@ function sendJobItem(thread) {
   );
 }
 
+function listTitle(thread) {
+  var project = threadProjectName(thread);
+  var state = threadStateLabel(thread);
+
+  if (project && state)
+    return project + "  " + state;
+  return project || state || "Codex thread";
+}
+
 function listDetail(thread) {
   var parts = [];
-  var status = threadStatusText(thread);
-  var source = sessionSourceText(thread.source);
-  var cwd = basename(thread.cwd || "");
-  var timestamp = compactThreadTime(thread.updatedAt || thread.createdAt);
-  var shortId = shortThreadId(thread.id || thread.sessionId);
+  var timestamp = listThreadTime(thread && (thread.updatedAt || thread.createdAt));
+  var context = listContext(thread);
+  var prompt = listPrompt(thread);
 
-  if (timestamp && shortId)
-    parts.push(timestamp + " " + shortId);
-  else if (timestamp)
+  if (timestamp)
     parts.push(timestamp);
-  else if (shortId)
-    parts.push(shortId);
-  if (status && status !== "notLoaded")
-    parts.push(status);
+  if (context)
+    parts.push(context);
+  if (prompt)
+    parts.push(prompt);
+  return parts.join(" - ") || "Open for latest content";
+}
+
+function threadProjectName(thread) {
+  var cwd = basename(thread && thread.cwd || "");
+  var repo = repoNameFromOrigin(thread && thread.gitInfo && thread.gitInfo.originUrl);
+  return cwd || repo || "Codex";
+}
+
+function repoNameFromOrigin(originUrl) {
+  var text = String(originUrl || "");
+  var slash;
+
+  if (!text)
+    return "";
+  text = text.replace(/\.git$/, "");
+  slash = Math.max(text.lastIndexOf("/"), text.lastIndexOf(":"));
+  if (slash !== -1)
+    text = text.slice(slash + 1);
+  return text;
+}
+
+function threadStateLabel(thread) {
+  var flags = activeFlags(thread);
+  var status = threadStatusText(thread);
+
+  if (hasFlag(flags, "waitingOnApproval"))
+    return "approval";
+  if (hasFlag(flags, "waitingOnUserInput"))
+    return "input";
+  if (status === "active")
+    return "working";
+  if (status === "systemError")
+    return "error";
+  if (status === "notLoaded")
+    return "saved";
+  if (status === "idle")
+    return "idle";
+  return status || "unknown";
+}
+
+function activeFlags(thread) {
+  var status = thread && thread.status;
+  if (status && typeof status !== "string" && status.activeFlags && typeof status.activeFlags.length === "number")
+    return status.activeFlags;
+  return [];
+}
+
+function hasFlag(flags, value) {
+  var index;
+  for (index = 0; index < flags.length; index += 1) {
+    if (flags[index] === value)
+      return true;
+  }
+  return false;
+}
+
+function listContext(thread) {
+  var parts = [];
+  var branch = thread && thread.gitInfo && thread.gitInfo.branch;
+  var source = sessionSourceContext(thread && thread.source);
+  var role = thread && (thread.agentRole || thread.agentNickname);
+
+  if (branch)
+    parts.push(shortBranch(branch));
+  if (role)
+    parts.push(String(role));
   if (source)
     parts.push(source);
-  if (cwd)
-    parts.push(cwd);
-  return parts.join(" - ") || "Open for latest content";
+  return parts.join(" ");
+}
+
+function shortBranch(branch) {
+  branch = String(branch || "");
+  if (branch.indexOf("refs/heads/") === 0)
+    branch = branch.slice(11);
+  return branch;
+}
+
+function sessionSourceContext(source) {
+  var text = sessionSourceText(source);
+  if (text === "cli" || text === "vscode" || text === "appServer")
+    return "";
+  if (text.indexOf("subAgent:") === 0)
+    return text.slice(9);
+  return text;
+}
+
+function listPrompt(thread) {
+  return firstLine(thread && thread.preview) || firstLine(thread && thread.name) || "";
 }
 
 function threadStatusText(thread) {
@@ -332,11 +422,41 @@ function subAgentSourceText(source) {
   return "subAgent";
 }
 
-function compactThreadTime(value) {
+function listThreadTime(value) {
   var date = parseThreadDate(value);
+  var now = Date.now();
+  var diff;
+  var minutes;
+
   if (!date)
     return "";
-  return String(date.getMonth() + 1) + "/" + String(date.getDate()) + " " + pad2(date.getHours()) + ":" + pad2(date.getMinutes());
+  diff = now - date.getTime();
+  if (diff >= 0) {
+    minutes = Math.floor(diff / 60000);
+    if (minutes < 1)
+      return "now";
+    if (minutes < 60)
+      return String(minutes) + "m ago";
+    if (sameLocalDay(new Date(now), date))
+      return clockTime(date);
+    if (minutes < 10080)
+      return weekdayName(date.getDay()) + " " + clockTime(date);
+  }
+  return String(date.getMonth() + 1) + "/" + String(date.getDate()) + " " + clockTime(date);
+}
+
+function sameLocalDay(left, right) {
+  return left.getFullYear() === right.getFullYear() &&
+         left.getMonth() === right.getMonth() &&
+         left.getDate() === right.getDate();
+}
+
+function weekdayName(day) {
+  return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][day] || "";
+}
+
+function clockTime(date) {
+  return pad2(date.getHours()) + ":" + pad2(date.getMinutes());
 }
 
 function parseThreadDate(value) {
@@ -356,15 +476,6 @@ function parseThreadDate(value) {
 function pad2(value) {
   value = String(value);
   return value.length < 2 ? "0" + value : value;
-}
-
-function shortThreadId(id) {
-  id = String(id || "");
-  if (!id)
-    return "";
-  if (id.length <= 8)
-    return "#" + id;
-  return "#" + id.slice(-4);
 }
 
 function summarizeThreadIds(threads) {

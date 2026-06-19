@@ -85,9 +85,9 @@ describe("native C PKJS bridge", () => {
     });
 
     const row = harness.sentMessages.find(message => message[0] === "job_item");
-    expect(row[1]).toContain("thr_1|active|Fix deploy|#thr_1 - active - cli - codex-pebble");
+    expect(row[1]).toContain("thr_1|active|codex-pebble  working|Fix deploy preview");
     const notLoadedRow = harness.sentMessages.find(message => String(message[1]).startsWith("thr_2|"));
-    expect(notLoadedRow[1]).toContain("thr_2|notLoaded|Review tests in detail|#thr_2 - vscode - repo");
+    expect(notLoadedRow[1]).toContain("thr_2|notLoaded|repo  saved|Review tests in detail");
     expect(harness.sentMessages.at(-1)).toMatchObject({
       0: "job_complete",
       1: "2|1",
@@ -138,7 +138,7 @@ describe("native C PKJS bridge", () => {
     expect(rows.at(-1)).toContain("thr_3|");
   });
 
-  it("keeps same-title app-server rows visually distinguishable", async () => {
+  it("keeps same-title app-server rows focused on useful context", async () => {
     const harness = loadPkjs({
       codexJobsSettings: JSON.stringify({
         wsUrl: "ws://127.0.0.1:4501",
@@ -154,7 +154,7 @@ describe("native C PKJS bridge", () => {
           status: { type: "idle" },
           source: { subAgent: "review" },
           cwd: "/tmp/pebble",
-          updatedAt: 1781829639,
+          updatedAt: 1700000000,
         },
         {
           id: "019edd24-1cbc-7fa3-aa88-9299040b2222",
@@ -163,7 +163,7 @@ describe("native C PKJS bridge", () => {
           status: { type: "idle" },
           source: { subAgent: "review" },
           cwd: "/tmp/pebble",
-          updatedAt: 1781827507,
+          updatedAt: 1700003600,
         },
         {
           id: "019edce0-590e-7612-8ba0-566971793333",
@@ -172,7 +172,7 @@ describe("native C PKJS bridge", () => {
           status: { type: "idle" },
           source: { subAgent: "review" },
           cwd: "/tmp/pebble",
-          updatedAt: 1781823026,
+          updatedAt: 1700007200,
         },
       ],
     });
@@ -184,14 +184,16 @@ describe("native C PKJS bridge", () => {
     const details = harness.sentMessages
       .filter(message => message[0] === "job_item")
       .map(message => String(message[1]).split("|")[3]);
+    const titles = harness.sentMessages
+      .filter(message => message[0] === "job_item")
+      .map(message => String(message[1]).split("|")[2]);
 
     expect(details).toHaveLength(3);
     expect(new Set(details).size).toBe(3);
+    expect(new Set(titles)).toEqual(new Set(["pebble  idle"]));
     expect(details.join("\n")).not.toContain("[object Object]");
-    expect(details[0]).toContain("#1111");
-    expect(details[1]).toContain("#2222");
-    expect(details[2]).toContain("#3333");
-    expect(details[0]).toContain("subAgent:review");
+    expect(details[0]).toContain("review");
+    expect(details[0]).toContain("Review the current code changes");
   });
 
   it("loads thread detail with thread/read and emits readable content", async () => {
