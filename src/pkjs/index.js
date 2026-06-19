@@ -1853,8 +1853,18 @@ function truncateUtf8FromEnd(value, maxBytes) {
 
 function humanError(error) {
   var message = error && error.message ? error.message : String(error || "Sync failed");
-  if (/WebSocket|Handshake status 403|Connection failed/i.test(message))
-    return "Cannot reach Codex";
+  if (/401|unauthorized|bad token|invalid token/i.test(message))
+    return "Bad relay token";
+  if (/409|already connected|already-connected/i.test(message))
+    return "Another watch is connected";
+  if (/502|bad gateway|upstream connect failed|app-server unavailable/i.test(message))
+    return "Codex app-server unavailable";
+  if (/timed out|timeout/i.test(message))
+    return "Codex request timed out";
+  if (/403|forbidden|rejected/i.test(message))
+    return "Relay rejected connection";
+  if (/WebSocket|Connection failed|NetworkError|ECONNREFUSED/i.test(message))
+    return "Cannot reach Codex relay";
   return message;
 }
 

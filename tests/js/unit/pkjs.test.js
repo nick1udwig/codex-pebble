@@ -510,6 +510,12 @@ describe("native C PKJS bridge", () => {
     expect(harness.logs.some(line => line.includes("Sync failed: WebSocket closed: type=close code=1006 reason=abnormal wasClean=false"))).toBe(true);
   });
 
+  it("surfaces common sidecar connection failures with specific watch messages", async () => {
+    await expectFailedConnectionMessage("Handshake status 401 Unauthorized", "Bad relay token");
+    await expectFailedConnectionMessage("Handshake status 409 Conflict", "Another watch is connected");
+    await expectFailedConnectionMessage("Handshake status 502 Bad Gateway upstream connect failed", "Codex app-server unavailable");
+  });
+
   it("renders live app-server notifications on the active thread", async () => {
     const harness = loadPkjs({
       codexJobsSettings: JSON.stringify({
@@ -634,6 +640,27 @@ function lastMessageOfType(harness, type) {
 
 function messagesOfType(harness, type) {
   return harness.sentMessages.filter(message => message[0] === type);
+}
+
+async function expectFailedConnectionMessage(message, expected) {
+  const harness = loadPkjs({
+    codexJobsSettings: JSON.stringify({
+      wsUrl: "ws://127.0.0.1:4501",
+      displayLimit: 2,
+    }),
+  });
+
+  harness.listeners.appmessage({ payload: { 0: "app_ready" } });
+  harness.webSockets[0].failClose({
+    type: "close",
+    code: 1006,
+    message,
+    wasClean: false,
+  });
+
+  await vi.waitFor(() => {
+    expect(lastMessageOfType(harness, "error")?.[1]).toBe(expected);
+  });
 }
 
 function detailPayload(message) {
