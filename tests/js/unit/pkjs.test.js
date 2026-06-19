@@ -292,6 +292,47 @@ describe("native C PKJS bridge", () => {
     }
   });
 
+  it("keeps polling after a reply when the immediate thread read is stale", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = loadPkjs({
+        codexJobsSettings: JSON.stringify({
+          wsUrl: "ws://127.0.0.1:4501",
+          displayLimit: 2,
+          recentCompletionLookbackMinutes: 720,
+        }),
+      }, {
+        threadReadFixture(threadId, readCount) {
+          if (threadId !== "thr_2")
+            return threadReadFixture(threadId);
+          if (readCount <= 2)
+            return threadReadFixture(threadId);
+          return completedThreadFixture(threadId, "Finished the requested update.");
+        },
+      });
+
+      harness.listeners.appmessage({ payload: { 0: "reply", 1: "thr_2|please continue" } });
+      harness.webSockets[0].open();
+
+      await vi.waitFor(() => {
+        const detail = lastMessageOfType(harness, "detail_update");
+        expect(detail?.[1]).toContain("You: please continue");
+        expect(detail?.[1]).toContain("Codex: working");
+      });
+
+      await vi.advanceTimersByTimeAsync(3000);
+      harness.webSockets.at(-1).open();
+
+      await vi.waitFor(() => {
+        expect(lastMessageOfType(harness, "detail_update")?.[1]).toContain("Codex: Finished the requested update.");
+      });
+      expect(harness.threadReadCounts.thr_2).toBe(3);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("logs websocket close details for failed connections", async () => {
     const harness = loadPkjs({
       codexJobsSettings: JSON.stringify({
