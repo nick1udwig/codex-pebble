@@ -3,6 +3,7 @@ package sidecar
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -79,6 +80,57 @@ func TestServerRejectsMissingToken(t *testing.T) {
 	if called {
 		t.Fatal("upstream factory was called for unauthorized client")
 	}
+}
+
+func TestReadyzReportsUpstreamStatus(t *testing.T) {
+	t.Run("ready", func(t *testing.T) {
+		upstream := newFakeUpstream()
+		server := httptest.NewServer(NewServerWithFactory(Config{}, log.New(io.Discard, "", 0), func(context.Context) (Upstream, error) {
+			return upstream, nil
+		}))
+		defer server.Close()
+
+		resp, err := http.Get(server.URL + "/readyz")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d body = %q, want 200", resp.StatusCode, body)
+		}
+		if !strings.Contains(string(body), "ok upstream=unix") {
+			t.Fatalf("body = %q, want upstream status", body)
+		}
+	})
+
+	t.Run("unavailable", func(t *testing.T) {
+		server := httptest.NewServer(NewServerWithFactory(Config{}, log.New(io.Discard, "", 0), func(context.Context) (Upstream, error) {
+			return nil, errors.New("socket missing")
+		}))
+		defer server.Close()
+
+		resp, err := http.Get(server.URL + "/readyz")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d body = %q, want 503", resp.StatusCode, body)
+		}
+		if !strings.Contains(string(body), "upstream unavailable: socket missing") {
+			t.Fatalf("body = %q, want upstream error", body)
+		}
+	})
 }
 
 func TestCLIHelp(t *testing.T) {

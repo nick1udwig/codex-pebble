@@ -57,10 +57,13 @@ func defaultUpstreamFactory(backend ResolvedBackend) UpstreamFactory {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
-	case "/healthz", "/readyz":
+	case "/healthz":
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
+		return
+	case "/readyz":
+		s.handleReady(w, r)
 		return
 	}
 
@@ -104,6 +107,26 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		s.logger.Printf("client disconnected")
 	}
+}
+
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if s.backend.Transport == TransportStdio {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok upstream=stdio\n"))
+		return
+	}
+
+	upstream, err := s.factory(r.Context())
+	if err != nil {
+		s.logger.Printf("ready check failed: %v", err)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("upstream unavailable: " + err.Error() + "\n"))
+		return
+	}
+	_ = upstream.Close()
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok upstream=" + string(s.backend.Transport) + "\n"))
 }
 
 func (s *Server) authorized(r *http.Request) bool {
