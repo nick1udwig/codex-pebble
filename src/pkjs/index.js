@@ -609,8 +609,10 @@ function submitReply(payload) {
     else
       syncJobs();
   }).catch(function(error) {
+    var message = humanError(error);
     log("Reply failed", error);
-    sendError(humanError(error));
+    sendFailedReplyUpdate(threadId, text, message);
+    sendError(message);
   });
 }
 
@@ -715,6 +717,10 @@ function sendDetailUpdate(threadId, thread) {
 
 function sendPendingReplyUpdate(threadId, text) {
   sendDetailBody(threadId, pendingReplyBody(text, "Codex: working..."), SyncState.syncing);
+}
+
+function sendFailedReplyUpdate(threadId, text, message) {
+  sendDetailBody(threadId, pendingReplyBody(text, "Reply failed: " + String(message || "try again")), SyncState.desynced);
 }
 
 function sendDetailBody(threadId, body, syncState, page) {

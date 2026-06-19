@@ -95,6 +95,8 @@ static char s_detail_payload_buffer[CODEX_DETAIL_PAYLOAD_LENGTH];
 static char s_thread_body[CODEX_THREAD_BODY_LENGTH];
 static char s_thread_body_merge_buffer[CODEX_THREAD_BODY_LENGTH];
 static char s_thread_body_id[CODEX_ID_LENGTH];
+static char s_last_reply_thread_id[CODEX_ID_LENGTH];
+static char s_last_reply_text[CODEX_REPLY_LENGTH];
 static bool s_thread_body_loaded;
 static size_t s_job_count;
 static int s_selected_job = -1;
@@ -107,11 +109,13 @@ static char s_status[CODEX_STATUS_LENGTH] = "Starting";
 static bool s_touch_subscribed;
 static bool s_touch_down;
 static bool s_touch_dragged;
+static bool s_reply_in_flight;
+static bool s_reply_retry_available;
 static int s_touch_down_x;
 static int s_touch_down_y;
 static int s_touch_last_y;
 
-static void prv_send_message(const char *type, const char *payload);
+static bool prv_send_message(const char *type, const char *payload);
 static void prv_reload_menu(void);
 static void prv_copy_string(char *dest, size_t dest_size, const char *src);
 static CodexJob *prv_find_job_by_id(const char *id);
@@ -126,6 +130,9 @@ static bool prv_job_is_working_kind(const char *kind);
 static bool prv_job_needs_attention_kind(const char *kind);
 static void prv_format_job_title(CodexJob *job, char *dest, size_t dest_size);
 static void prv_prepare_detail_load(CodexJob *job);
+static void prv_clear_reply_state(const char *thread_id);
+static void prv_mark_reply_retry_available(void);
+static bool prv_retry_reply(void);
 static const char *prv_selected_detail_text(CodexJob *job);
 static void prv_apply_detail_text(CodexJob *job, const char *body, CodexDetailMerge merge, CodexDetailAnchor anchor);
 
@@ -243,6 +250,29 @@ static void prv_prepare_detail_load(CodexJob *job) {
   prv_copy_string(s_thread_body_id, sizeof(s_thread_body_id), job->id);
   s_thread_body[0] = '\0';
   s_thread_body_loaded = false;
+}
+
+static void prv_clear_reply_state(const char *thread_id) {
+  if (thread_id && s_last_reply_thread_id[0] && strcmp(thread_id, s_last_reply_thread_id) != 0) {
+    return;
+  }
+
+  s_reply_in_flight = false;
+  s_reply_retry_available = false;
+  s_last_reply_thread_id[0] = '\0';
+  s_last_reply_text[0] = '\0';
+}
+
+static void prv_mark_reply_retry_available(void) {
+  if (!s_reply_in_flight || !s_last_reply_thread_id[0] || !s_last_reply_text[0]) {
+    return;
+  }
+
+  s_reply_in_flight = false;
+  s_reply_retry_available = true;
+  if (s_detail_footer_layer) {
+    text_layer_set_text(s_detail_footer_layer, "Select: retry reply");
+  }
 }
 
 static void prv_join_thread_body(const char *first, const char *second) {
@@ -542,7 +572,8 @@ static void prv_handle_detail_update(const char *payload) {
   job->detail_page_pending = false;
   job->detail_pending_request = CodexDetailRequestNone;
   if (s_detail_footer_layer) {
-    text_layer_set_text(s_detail_footer_layer, "Select: reply");
+    text_layer_set_text(s_detail_footer_layer,
+                        s_reply_retry_available && strcmp(job->id, s_last_reply_thread_id) == 0 ? "Select: retry reply" : "Select: reply");
   }
 }
 
@@ -582,6 +613,9 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
   if (strcmp(type, CODEX_MSG_SETTINGS_STATE) == 0) {
     prv_handle_settings_state(payload);
   } else if (strcmp(type, CODEX_MSG_SYNC_STATUS) == 0) {
+    if (strcmp(payload, "Reply sent") == 0) {
+      prv_clear_reply_state(NULL);
+    }
     prv_set_status(payload, s_sync_state);
     if (s_detail_footer_layer && strcmp(payload, "Syncing") != 0 && strcmp(payload, "Loading more") != 0) {
       text_layer_set_text(s_detail_footer_layer, payload);
@@ -597,9 +631,10 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
   } else if (strcmp(type, CODEX_MSG_DETAIL_UPDATE) == 0) {
     prv_handle_detail_update(payload);
   } else if (strcmp(type, CODEX_MSG_ERROR) == 0) {
+    prv_mark_reply_retry_available();
     prv_set_status(payload[0] ? payload : "Sync failed", CodexSyncDesynced);
     if (s_detail_footer_layer) {
-      text_layer_set_text(s_detail_footer_layer, s_status);
+      text_layer_set_text(s_detail_footer_layer, s_reply_retry_available ? "Select: retry reply" : s_status);
     }
     prv_reload_menu();
   }
@@ -616,15 +651,16 @@ static void prv_outbox_failed(DictionaryIterator *iter, AppMessageResult reason,
     job->detail_page_pending = false;
     job->detail_pending_request = CodexDetailRequestNone;
   }
+  prv_mark_reply_retry_available();
   prv_set_status("Phone link not ready", CodexSyncDesynced);
   prv_reload_menu();
 }
 
-static void prv_send_message(const char *type, const char *payload) {
+static bool prv_send_message(const char *type, const char *payload) {
   DictionaryIterator *iter;
   AppMessageResult result = app_message_outbox_begin(&iter);
   if (result != APP_MSG_OK || !iter) {
-    return;
+    return false;
   }
 
   dict_write_cstring(iter, MESSAGE_KEY_MessageType, type ? type : "");
@@ -632,7 +668,7 @@ static void prv_send_message(const char *type, const char *payload) {
     dict_write_cstring(iter, MESSAGE_KEY_Payload, payload);
   }
   dict_write_int32(iter, MESSAGE_KEY_SyncState, s_sync_state);
-  app_message_outbox_send();
+  return app_message_outbox_send() == APP_MSG_OK;
 }
 
 static void prv_ready_timer_callback(void *context) {
@@ -731,6 +767,8 @@ static void prv_update_detail_layers(void) {
       text_layer_set_text(s_detail_footer_layer, "Loading thread");
     } else if (job->detail_page_pending) {
       text_layer_set_text(s_detail_footer_layer, job->detail_pending_request == CodexDetailRequestOlder ? "Loading older" : "Loading newer");
+    } else if (s_reply_retry_available && strcmp(job->id, s_last_reply_thread_id) == 0) {
+      text_layer_set_text(s_detail_footer_layer, "Select: retry reply");
     } else {
       text_layer_set_text(s_detail_footer_layer, "Select: reply");
     }
@@ -870,11 +908,39 @@ static void prv_send_reply_text(const char *text) {
   }
 
   prv_copy_payload_field(clean_text, sizeof(clean_text), text);
+  prv_copy_string(s_last_reply_thread_id, sizeof(s_last_reply_thread_id), thread_id);
+  prv_copy_string(s_last_reply_text, sizeof(s_last_reply_text), clean_text);
+  s_reply_in_flight = true;
+  s_reply_retry_available = false;
   snprintf(payload, sizeof(payload), "%s|%s", thread_id, clean_text);
   if (s_detail_footer_layer) {
     text_layer_set_text(s_detail_footer_layer, "Sending...");
   }
-  prv_send_message(CODEX_MSG_REPLY, payload);
+  if (!prv_send_message(CODEX_MSG_REPLY, payload)) {
+    prv_mark_reply_retry_available();
+    if (s_detail_footer_layer) {
+      text_layer_set_text(s_detail_footer_layer, "Select: retry reply");
+    }
+  }
+}
+
+static bool prv_retry_reply(void) {
+  char payload[CODEX_ID_LENGTH + CODEX_REPLY_LENGTH + 2];
+
+  if (!s_reply_retry_available || !s_last_reply_thread_id[0] || !s_last_reply_text[0]) {
+    return false;
+  }
+
+  snprintf(payload, sizeof(payload), "%s|%s", s_last_reply_thread_id, s_last_reply_text);
+  s_reply_in_flight = true;
+  s_reply_retry_available = false;
+  if (s_detail_footer_layer) {
+    text_layer_set_text(s_detail_footer_layer, "Retrying...");
+  }
+  if (!prv_send_message(CODEX_MSG_REPLY, payload)) {
+    prv_mark_reply_retry_available();
+  }
+  return true;
 }
 
 #if defined(PBL_MICROPHONE)
@@ -914,6 +980,11 @@ static void prv_detail_select_handler(ClickRecognizerRef recognizer, void *conte
   (void)context;
 
 #if defined(PBL_MICROPHONE)
+  CodexJob *job = prv_get_selected_job();
+  if (job && s_reply_retry_available && strcmp(job->id, s_last_reply_thread_id) == 0 && prv_retry_reply()) {
+    return;
+  }
+
   if (!s_dictation_session) {
     if (s_detail_footer_layer) {
       text_layer_set_text(s_detail_footer_layer, "Voice unavailable");

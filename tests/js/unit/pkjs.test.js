@@ -278,6 +278,27 @@ describe("native C PKJS bridge", () => {
     expect(harness.sentMessages.some(message => message[0] === "sync_status" && message[1] === "Reply sent")).toBe(true);
   });
 
+  it("keeps failed dictated replies visible for retry", async () => {
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 2,
+      }),
+    }, {
+      turnStartError: "sidecar unavailable",
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "reply", 1: "thr_2|please continue" } });
+    harness.webSockets[0].open();
+
+    await vi.waitFor(() => {
+      const detail = lastMessageOfType(harness, "detail_update");
+      expect(detail?.[1]).toContain("You: please continue");
+      expect(detail?.[1]).toContain("Reply failed: sidecar unavailable");
+    });
+    expect(lastMessageOfType(harness, "error")?.[1]).toBe("sidecar unavailable");
+  });
+
   it("keeps long thread ids intact when sending dictated replies", async () => {
     const longThreadId = "thread-" + "a".repeat(70);
     const harness = loadPkjs({
@@ -799,6 +820,13 @@ function loadPkjs(initialStorage = {}, options = {}) {
           },
         }) });
       } else if (message.method === "turn/start") {
+        if (options.turnStartError) {
+          this.onmessage({ data: JSON.stringify({
+            id: message.id,
+            error: { message: options.turnStartError },
+          }) });
+          return;
+        }
         this.onmessage({ data: JSON.stringify({
           id: message.id,
           result: { turn: { id: "turn_new", status: "inProgress", items: [] } },
