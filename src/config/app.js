@@ -46,7 +46,12 @@ function saveSettings(settings) {
 
 function getBridge() {
   if (globalThis.PebbleConfigBridge && typeof globalThis.PebbleConfigBridge.submit === "function") {
-    return globalThis.PebbleConfigBridge;
+    return {
+      submit(payload) {
+        globalThis.PebbleConfigBridge.submit(payload);
+        return true;
+      },
+    };
   }
 
   const returnTo = getReturnToUrl();
@@ -55,20 +60,24 @@ function getBridge() {
       submit(payload) {
         try {
           globalThis.location.href = appendClosePayload(returnTo, payload);
+          return true;
         } catch (_error) {
+          return false;
         }
       },
     };
   }
 
   return {
-    submit(payload) {
-      try {
-        globalThis.location.href = "pebblejs://close#" + encodeURIComponent(JSON.stringify(payload));
-      } catch (_error) {
-      }
-    },
-  };
+      submit(payload) {
+        try {
+          globalThis.location.href = "pebblejs://close#" + encodeURIComponent(JSON.stringify(payload));
+          return true;
+        } catch (_error) {
+          return false;
+        }
+      },
+    };
 }
 
 function getReturnToUrl(search = globalThis.location?.search ?? "") {
@@ -125,8 +134,15 @@ function bootstrap() {
     }
 
     saveSettings(nextSettings);
-    getBridge().submit(nextSettings);
-    setStatus("Closing to save settings.", "success");
+    try {
+      if (getBridge().submit(nextSettings)) {
+        setStatus("Closing to save settings.", "success");
+      } else {
+        setStatus("Settings saved locally, but watch was not notified.", "error");
+      }
+    } catch (_error) {
+      setStatus("Settings saved locally, but watch was not notified.", "error");
+    }
   });
 }
 

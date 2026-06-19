@@ -106,6 +106,34 @@ describe("native C PKJS bridge", () => {
     expect(harness.webSockets[0].sentJson.find(message => message.method === "thread/list").params.limit).toBe(2);
   });
 
+  it("keeps cached rows visible when a refresh fails", async () => {
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 2,
+      }),
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "app_ready" } });
+    harness.webSockets[0].open();
+    await vi.waitFor(() => expect(lastMessageOfType(harness, "job_complete")?.[1]).toBe("2|1"));
+
+    const clearCountBefore = messagesOfType(harness, "job_clear").length;
+    harness.listeners.appmessage({ payload: { 0: "refresh" } });
+    harness.webSockets.at(-1).failClose({
+      type: "close",
+      code: 1006,
+      message: "Connection failed",
+      wasClean: false,
+    });
+
+    await vi.waitFor(() => {
+      expect(lastMessageOfType(harness, "sync_status")?.[1]).toBe("Offline: Cannot reach Codex relay");
+    });
+    expect(messagesOfType(harness, "job_clear")).toHaveLength(clearCountBefore);
+    expect(lastMessageOfType(harness, "error")?.[1]).not.toBe("Cannot reach Codex relay");
+  });
+
   it("loads more rows when the C app asks for the next page", async () => {
     const harness = loadPkjs({
       codexJobsSettings: JSON.stringify({

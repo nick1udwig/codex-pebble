@@ -66,6 +66,32 @@ test("persists settings locally without storing credentials", async ({ page }) =
   expect(JSON.stringify(stored)).not.toContain("OpenAI");
 });
 
+test("shows a warning when settings save locally but bridge submit fails", async ({ browser }) => {
+  const page = await browser.newPage();
+  await page.addInitScript(() => {
+    window.PebbleConfigBridge = {
+      submit() {
+        throw new Error("bridge unavailable");
+      },
+    };
+  });
+
+  await page.goto("/");
+  await page.fill("#wsUrl", "ws://codex-relay.tailnet-name.ts.net:4501");
+  await page.fill("#displayLimit", "4");
+  await page.click("#save-settings");
+
+  await expect(page.locator("#status-banner")).toHaveText("Settings saved locally, but watch was not notified.");
+  await expect(page.locator("#status-banner")).toHaveAttribute("data-kind", "error");
+  const stored = await page.evaluate(() => JSON.parse(window.localStorage.getItem("codex_jobs:config_state")));
+  expect(stored).toEqual({
+    wsUrl: "ws://codex-relay.tailnet-name.ts.net:4501",
+    displayLimit: 4,
+  });
+
+  await page.close();
+});
+
 test("uses emulator return_to callback when no bridge is injected", async ({ browser }) => {
   const page = await browser.newPage();
   const returnTo = "http://localhost:12345/close?";

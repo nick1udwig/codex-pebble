@@ -162,7 +162,6 @@ function syncJobs(options) {
     requestLimit = Math.min(settings.displayLimit, MAX_WATCH_ROWS - listThreads.length);
   } else {
     requestLimit = options.reset ? settings.displayLimit : Math.min(MAX_WATCH_ROWS, Math.max(settings.displayLimit, activeListLimit || listThreads.length));
-    resetListCache();
     activeListLimit = requestLimit;
   }
 
@@ -204,12 +203,16 @@ function syncJobs(options) {
       syncInFlight = false;
     })
     .catch(function(error) {
+      var message = humanError(error);
       log("Sync failed", error);
       if (currentClient)
         currentClient.close();
       currentClient = null;
       syncInFlight = false;
-      sendError(humanError(error));
+      if (listThreads.length)
+        sendStatus(options.loadMore ? "Load more failed" : "Offline: " + message, SyncState.desynced);
+      else
+        sendError(message);
     });
 }
 
