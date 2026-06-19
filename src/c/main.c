@@ -7,7 +7,7 @@
 #include "message_keys.auto.h"
 
 #define CODEX_MAX_JOBS 16
-#define CODEX_ID_LENGTH 48
+#define CODEX_ID_LENGTH 96
 #define CODEX_TITLE_LENGTH 48
 #define CODEX_DETAIL_LENGTH 96
 #define CODEX_BODY_LENGTH 384
@@ -15,6 +15,8 @@
 #define CODEX_STATUS_LENGTH 64
 #define CODEX_DETAIL_TEXT_MEASURE_HEIGHT 1200
 #define CODEX_DETAIL_TEXT_PADDING 4
+#define CODEX_READY_INITIAL_DELAY_MS 300
+#define CODEX_READY_RETRY_DELAY_MS 1000
 
 #define CODEX_MSG_APP_READY "app_ready"
 #define CODEX_MSG_REFRESH "refresh"
@@ -61,6 +63,7 @@ static DictationSession *s_dictation_session;
 static CodexJob s_jobs[CODEX_MAX_JOBS];
 static size_t s_job_count;
 static int s_selected_job = -1;
+static char s_selected_job_id[CODEX_ID_LENGTH];
 static bool s_has_more;
 static bool s_has_settings;
 static bool s_received_state;
@@ -70,9 +73,12 @@ static char s_status[CODEX_STATUS_LENGTH] = "Starting";
 static void prv_send_message(const char *type, const char *payload);
 static void prv_reload_menu(void);
 static void prv_copy_string(char *dest, size_t dest_size, const char *src);
+static CodexJob *prv_find_job_by_id(const char *id);
+static CodexJob *prv_get_selected_job(void);
 static void prv_update_detail_layers(void);
 static void prv_update_detail_scroll(bool scroll_to_bottom);
 static void prv_detail_click_config_provider(void *context);
+static void prv_schedule_ready_timer(uint32_t delay_ms);
 
 static void prv_copy_string(char *dest, size_t dest_size, const char *src) {
   if (!dest || dest_size == 0) {
@@ -139,6 +145,16 @@ static void prv_clear_jobs(void) {
   s_has_more = false;
 }
 
+static CodexJob *prv_get_selected_job(void) {
+  if (s_selected_job >= 0 && (size_t)s_selected_job < s_job_count) {
+    return &s_jobs[s_selected_job];
+  }
+  if (s_selected_job_id[0]) {
+    return prv_find_job_by_id(s_selected_job_id);
+  }
+  return NULL;
+}
+
 static void prv_handle_settings_state(const char *payload) {
   char buffer[128];
   char *cursor = buffer;
@@ -149,6 +165,7 @@ static void prv_handle_settings_state(const char *payload) {
 
   if (!s_has_settings) {
     prv_clear_jobs();
+    s_selected_job_id[0] = '\0';
     prv_set_status("Set server URL", CodexSyncDesynced);
   }
 
@@ -156,7 +173,7 @@ static void prv_handle_settings_state(const char *payload) {
 }
 
 static void prv_handle_job_item(const char *payload) {
-  char buffer[256];
+  char buffer[320];
   char *cursor = buffer;
   CodexJob *job;
 
@@ -173,6 +190,9 @@ static void prv_handle_job_item(const char *payload) {
   prv_copy_string(job->body, sizeof(job->body), job->detail);
   job->has_detail = false;
   job->loading_detail = false;
+  if (s_selected_job_id[0] && strcmp(job->id, s_selected_job_id) == 0) {
+    s_selected_job = (int)(s_job_count - 1);
+  }
 }
 
 static CodexJob *prv_find_job_by_id(const char *id) {
@@ -218,7 +238,7 @@ static void prv_handle_detail_update(const char *payload) {
 }
 
 static void prv_request_selected_detail(void) {
-  CodexJob *job = (s_selected_job >= 0 && (size_t)s_selected_job < s_job_count) ? &s_jobs[s_selected_job] : NULL;
+  CodexJob *job = prv_get_selected_job();
   if (!job) {
     return;
   }
@@ -293,7 +313,18 @@ static void prv_send_message(const char *type, const char *payload) {
 
 static void prv_ready_timer_callback(void *context) {
   s_ready_timer = NULL;
+  if (s_received_state) {
+    return;
+  }
   prv_send_message(CODEX_MSG_APP_READY, "");
+  prv_schedule_ready_timer(CODEX_READY_RETRY_DELAY_MS);
+}
+
+static void prv_schedule_ready_timer(uint32_t delay_ms) {
+  if (s_ready_timer || s_received_state) {
+    return;
+  }
+  s_ready_timer = app_timer_register(delay_ms, prv_ready_timer_callback, NULL);
 }
 
 static uint16_t prv_get_num_sections(MenuLayer *menu_layer, void *context) {
@@ -316,7 +347,11 @@ static int16_t prv_get_header_height(MenuLayer *menu_layer, uint16_t section_ind
 
 static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *context) {
   if (!s_has_settings) {
-    menu_cell_basic_draw(ctx, cell_layer, "Set server URL", "Select opens phone settings", NULL);
+    if (!s_received_state) {
+      menu_cell_basic_draw(ctx, cell_layer, "Waiting for phone", "Select retries", NULL);
+    } else {
+      menu_cell_basic_draw(ctx, cell_layer, "Set server URL", "Select opens phone settings", NULL);
+    }
     return;
   }
 
@@ -336,7 +371,7 @@ static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
 }
 
 static void prv_update_detail_layers(void) {
-  CodexJob *job = (s_selected_job >= 0 && (size_t)s_selected_job < s_job_count) ? &s_jobs[s_selected_job] : NULL;
+  CodexJob *job = prv_get_selected_job();
   bool scroll_to_bottom = false;
 
   if (s_detail_body_layer) {
@@ -437,16 +472,17 @@ static void prv_detail_window_unload(Window *window) {
 }
 
 static void prv_send_reply_text(const char *text) {
-  CodexJob *job = (s_selected_job >= 0 && (size_t)s_selected_job < s_job_count) ? &s_jobs[s_selected_job] : NULL;
+  CodexJob *job = prv_get_selected_job();
+  const char *thread_id = job ? job->id : s_selected_job_id;
   char clean_text[CODEX_REPLY_LENGTH];
   char payload[CODEX_ID_LENGTH + CODEX_REPLY_LENGTH + 2];
 
-  if (!job || !text || !text[0]) {
+  if (!thread_id[0] || !text || !text[0]) {
     return;
   }
 
   prv_copy_payload_field(clean_text, sizeof(clean_text), text);
-  snprintf(payload, sizeof(payload), "%s|%s", job->id, clean_text);
+  snprintf(payload, sizeof(payload), "%s|%s", thread_id, clean_text);
   if (s_detail_footer_layer) {
     text_layer_set_text(s_detail_footer_layer, "Sending...");
   }
@@ -517,6 +553,11 @@ static void prv_detail_click_config_provider(void *context) {
 
 static void prv_select_click(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
   if (!s_has_settings) {
+    if (!s_received_state) {
+      prv_set_status("Waiting for phone", CodexSyncDesynced);
+      prv_send_message(CODEX_MSG_APP_READY, "");
+      return;
+    }
     prv_send_message(CODEX_MSG_OPEN_CONFIG, "");
     return;
   }
@@ -534,6 +575,7 @@ static void prv_select_click(MenuLayer *menu_layer, MenuIndex *cell_index, void 
   }
 
   s_selected_job = cell_index->row;
+  prv_copy_string(s_selected_job_id, sizeof(s_selected_job_id), s_jobs[s_selected_job].id);
   if (!s_detail_window) {
     s_detail_window = window_create();
     window_set_window_handlers(s_detail_window, (WindowHandlers){
@@ -594,7 +636,7 @@ static void prv_init(void) {
 #if defined(PBL_MICROPHONE)
   s_dictation_session = dictation_session_create(CODEX_REPLY_LENGTH, prv_dictation_callback, NULL);
   if (s_dictation_session) {
-    dictation_session_enable_confirmation(s_dictation_session, true);
+    dictation_session_enable_confirmation(s_dictation_session, false);
   }
 #endif
 
@@ -605,7 +647,7 @@ static void prv_init(void) {
   });
   window_stack_push(s_main_window, true);
 
-  s_ready_timer = app_timer_register(300, prv_ready_timer_callback, NULL);
+  prv_schedule_ready_timer(CODEX_READY_INITIAL_DELAY_MS);
 }
 
 static void prv_deinit(void) {
