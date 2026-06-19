@@ -59,6 +59,9 @@ var sendQueue = [];
 var sending = false;
 var syncInFlight = false;
 var currentClient = null;
+var detailClient = null;
+var detailClientThreadId = "";
+var detailClientReady = null;
 var activeListLimit = 0;
 var activeDetailThreadId = "";
 var detailPollTimer = null;
@@ -66,6 +69,8 @@ var detailPollAttempts = 0;
 var detailPollInFlight = false;
 var lastDetailBodyByThreadId = {};
 var pendingReplyTextByThreadId = {};
+var liveProgressLineByThreadId = {};
+var liveAgentTextByKey = {};
 
 Pebble.addEventListener("ready", function() {
   syncJobs({ reset: true });
@@ -105,6 +110,7 @@ Pebble.addEventListener("webviewclosed", function(event) {
   try {
     saveSettings(JSON.parse(decoded));
     activeListLimit = 0;
+    closeDetailClient();
     sendSettingsState();
     syncJobs({ reset: true });
   } catch (error) {
@@ -239,7 +245,7 @@ function requestThreadDetail(threadId) {
 
   setActiveDetailThread(threadId);
   sendStatus("Loading thread", SyncState.syncing);
-  runCodexRequest("Thread detail", function(client) {
+  runDetailRequest("Thread detail", threadId, function(client) {
     return client.request("thread/read", {
       threadId: threadId,
       includeTurns: true
@@ -267,7 +273,7 @@ function submitReply(payload) {
 
   setActiveDetailThread(threadId);
   sendStatus("Sending reply", SyncState.syncing);
-  runCodexRequest("Reply", function(client) {
+  runDetailRequest("Reply", threadId, function(client) {
     return client.request("thread/read", {
       threadId: threadId,
       includeTurns: true
@@ -312,6 +318,96 @@ function submitReply(payload) {
     log("Reply failed", error);
     sendError(humanError(error));
   });
+}
+
+function runDetailRequest(label, threadId, callback) {
+  var settings = loadSettings();
+
+  if (!settings.wsUrl)
+    return Promise.reject(new Error("Set server URL"));
+
+  log(label + " starting", settings.wsUrl);
+  return ensureDetailClient(threadId).then(function(client) {
+    return callback(client);
+  });
+}
+
+function ensureDetailClient(threadId) {
+  var settings = loadSettings();
+  var client;
+
+  if (!settings.wsUrl)
+    return Promise.reject(new Error("Set server URL"));
+
+  if (detailClient && detailClientThreadId === threadId && isClientOpen(detailClient))
+    return Promise.resolve(detailClient);
+
+  if (detailClientReady && detailClientThreadId === threadId)
+    return detailClientReady;
+
+  closeDetailClient();
+  detailClientThreadId = threadId;
+  detailClient = new JsonRpcClient(settings.wsUrl);
+  detailClient.onNotification = handleCodexNotification;
+  client = detailClient;
+
+  log("Live detail connecting", settings.wsUrl);
+  detailClientReady = client.connect()
+    .then(function() {
+      return client.request("thread/resume", {
+        threadId: threadId
+      });
+    })
+    .then(function(result) {
+      var thread = result.thread || result;
+      detailClientReady = null;
+      if (thread && (thread.id || thread.turns))
+        sendDetailUpdate(threadId, thread);
+      return client;
+    }, function(error) {
+      if (detailClient === client) {
+        detailClient = null;
+        detailClientThreadId = "";
+        detailClientReady = null;
+      }
+      client.close();
+      throw error;
+    });
+
+  return detailClientReady;
+}
+
+function closeDetailClient() {
+  var client = detailClient;
+  var threadId = detailClientThreadId;
+
+  detailClient = null;
+  detailClientThreadId = "";
+  detailClientReady = null;
+
+  if (!client)
+    return;
+
+  client.onNotification = null;
+  try {
+    if (threadId && isClientOpen(client)) {
+      client.request("thread/unsubscribe", {
+        threadId: threadId
+      }).then(function() {
+        client.close();
+      }, function() {
+        client.close();
+      });
+    } else {
+      client.close();
+    }
+  } catch (_) {
+    client.close();
+  }
+}
+
+function isClientOpen(client) {
+  return Boolean(client && client.ws && client.ws.readyState === 1);
 }
 
 function runCodexRequest(label, callback) {
@@ -367,6 +463,7 @@ function setActiveDetailThread(threadId) {
   if (activeDetailThreadId === threadId)
     return;
 
+  closeDetailClient();
   activeDetailThreadId = threadId;
   detailPollAttempts = 0;
   detailPollInFlight = false;
@@ -409,7 +506,7 @@ function pollThreadDetail(threadId) {
 
   detailPollAttempts += 1;
   detailPollInFlight = true;
-  runCodexRequest("Thread detail poll", function(client) {
+  runDetailRequest("Thread detail poll", threadId, function(client) {
     return client.request("thread/read", {
       threadId: threadId,
       includeTurns: true
@@ -443,6 +540,192 @@ function threadNeedsFollowup(thread) {
 
 function detailNeedsFollowup(threadId, thread) {
   return threadNeedsFollowup(thread) || Boolean(pendingReplyTextByThreadId[threadId]);
+}
+
+function handleCodexNotification(method, params) {
+  var threadId = notificationThreadId(params);
+  var line;
+
+  if (!threadId || threadId !== activeDetailThreadId)
+    return;
+
+  log("Live notification", method);
+  if (method === "turn/started") {
+    sendLiveProgress(threadId, "Codex: working...");
+  } else if (method === "turn/plan/updated") {
+    line = planNotificationSummary(params);
+    if (line)
+      sendLiveProgress(threadId, line);
+  } else if (method === "item/started") {
+    line = itemStartedSummary(params.item);
+    if (line)
+      sendLiveProgress(threadId, line);
+  } else if (method === "item/agentMessage/delta") {
+    handleAgentMessageDelta(params);
+  } else if (method === "item/completed") {
+    handleItemCompleted(params);
+  } else if (method === "turn/completed") {
+    handleTurnCompleted(params);
+  } else if (method === "thread/status/changed") {
+    if (params && params.status)
+      sendLiveProgress(threadId, "Codex: " + threadStatusText({ status: params.status }));
+  }
+}
+
+function notificationThreadId(params) {
+  if (!params)
+    return "";
+  if (params.threadId)
+    return sanitizeField(params.threadId, ProtocolByteLimit.threadId);
+  if (params.thread && params.thread.id)
+    return sanitizeField(params.thread.id, ProtocolByteLimit.threadId);
+  return "";
+}
+
+function handleAgentMessageDelta(params) {
+  var threadId = notificationThreadId(params);
+  var key;
+  var text;
+
+  if (!threadId || !params || !params.itemId)
+    return;
+
+  key = [threadId, params.turnId || "", params.itemId].join("|");
+  text = (liveAgentTextByKey[key] || "") + String(params.delta || "");
+  liveAgentTextByKey[key] = text;
+  if (text)
+    sendLiveProgress(threadId, "Codex: " + text);
+}
+
+function handleItemCompleted(params) {
+  var threadId = notificationThreadId(params);
+  var item = params && params.item;
+  var summary = threadItemSummary(item);
+  var body;
+  var key;
+
+  if (!threadId || !summary)
+    return;
+
+  if (item && item.id) {
+    key = [threadId, params.turnId || "", item.id].join("|");
+    delete liveAgentTextByKey[key];
+  }
+
+  body = clearLiveProgress(threadId);
+  if (bodyContainsLine(body, summary))
+    return;
+
+  sendDetailBody(threadId, appendWithReservedSuffix(body, summary), SyncState.syncing);
+}
+
+function handleTurnCompleted(params) {
+  var threadId = notificationThreadId(params);
+
+  if (!threadId)
+    return;
+
+  clearLiveProgress(threadId);
+  if (params && params.turn)
+    sendDetailUpdate(threadId, { id: threadId, turns: [params.turn] });
+
+  refreshDetailFromLiveClient(threadId)
+    .then(function(thread) {
+      if (threadId !== activeDetailThreadId)
+        return;
+      sendDetailUpdate(threadId, thread);
+      syncJobs();
+    })
+    .catch(function(error) {
+      log("Live completion refresh failed", error);
+      if (detailNeedsFollowup(threadId, {}))
+        scheduleDetailPoll(threadId, false);
+    });
+}
+
+function refreshDetailFromLiveClient(threadId) {
+  return ensureDetailClient(threadId).then(function(client) {
+    return client.request("thread/read", {
+      threadId: threadId,
+      includeTurns: true
+    });
+  }).then(function(result) {
+    return result.thread || result;
+  });
+}
+
+function sendLiveProgress(threadId, line) {
+  var body;
+
+  if (!threadId || !line)
+    return;
+
+  body = clearLiveProgress(threadId);
+  liveProgressLineByThreadId[threadId] = line;
+  sendDetailBody(threadId, appendWithReservedSuffix(body, line), SyncState.syncing);
+}
+
+function clearLiveProgress(threadId) {
+  var body = removeLiveProgressLine(lastDetailBodyByThreadId[threadId], threadId);
+
+  delete liveProgressLineByThreadId[threadId];
+  lastDetailBodyByThreadId[threadId] = body;
+  return body;
+}
+
+function removeLiveProgressLine(body, threadId) {
+  var line = liveProgressLineByThreadId[threadId];
+  var lines;
+  var normalized;
+  var index;
+  var kept = [];
+
+  body = String(body || "");
+  if (!line)
+    return body;
+
+  lines = body.split(/\n\n+/);
+  normalized = normalizeTextForMatch(line);
+  for (index = 0; index < lines.length; index += 1) {
+    if (normalizeTextForMatch(lines[index]) !== normalized)
+      kept.push(lines[index]);
+  }
+  return kept.join("\n\n");
+}
+
+function bodyContainsLine(body, line) {
+  return normalizeTextForMatch(body).indexOf(normalizeTextForMatch(line)) !== -1;
+}
+
+function itemStartedSummary(item) {
+  if (!item || !item.type)
+    return "Codex: working...";
+  if (item.type === "agentMessage")
+    return "Codex: writing...";
+  if (item.type === "commandExecution")
+    return "$ " + item.command + " (running)";
+  if (item.type === "dynamicToolCall")
+    return "Tool: " + (item.namespace ? item.namespace + "/" : "") + item.tool + " (running)";
+  if (item.type === "mcpToolCall")
+    return "Tool: " + item.server + "/" + item.tool + " (running)";
+  if (item.type === "plan")
+    return item.text ? "Plan: " + item.text : "Plan updated";
+  return "Codex: working...";
+}
+
+function planNotificationSummary(params) {
+  var plan = params && Array.isArray(params.plan) ? params.plan : [];
+  var index;
+  var step;
+
+  for (index = plan.length - 1; index >= 0; index -= 1) {
+    step = plan[index];
+    if (step && step.step)
+      return "Plan: " + step.step;
+  }
+  if (params && params.explanation)
+    return "Plan: " + params.explanation;
+  return "Plan updated";
 }
 
 function detailBody(threadId, thread) {
@@ -897,6 +1180,7 @@ function JsonRpcClient(url) {
   this.nextId = 1;
   this.pending = {};
   this.closed = false;
+  this.onNotification = null;
 }
 
 JsonRpcClient.prototype.connect = function() {
@@ -999,8 +1283,16 @@ JsonRpcClient.prototype.handleMessage = function(raw) {
 
   log("JSON-RPC receive", message.method || ("id=" + message.id) || "notification");
 
-  if (message.id === undefined)
+  if (message.id === undefined) {
+    if (message.method && this.onNotification) {
+      try {
+        this.onNotification(message.method, message.params || {});
+      } catch (error) {
+        log("Notification handler failed", error);
+      }
+    }
     return;
+  }
 
   pending = this.pending[message.id];
   if (!pending)
