@@ -278,6 +278,33 @@ describe("native C PKJS bridge", () => {
     expect(harness.sentMessages.some(message => message[0] === "sync_status" && message[1] === "Reply sent")).toBe(true);
   });
 
+  it("uses cached detail state to avoid a pre-send thread read", async () => {
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 2,
+      }),
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "detail_request", 1: "thr_2" } });
+    harness.webSockets[0].open();
+    await vi.waitFor(() => expect(harness.threadReadCounts.thr_2).toBe(1));
+
+    harness.listeners.appmessage({ payload: { 0: "reply", 1: "thr_2|please continue" } });
+    await vi.waitFor(() => {
+      expect(harness.webSockets[0].sentJson.some(message => message.method === "turn/start")).toBe(true);
+    });
+
+    expect(harness.threadReadCounts.thr_2).toBe(1);
+    expect(harness.webSockets[0].sentJson.map(message => message.method)).toEqual([
+      "initialize",
+      "initialized",
+      "thread/resume",
+      "thread/read",
+      "turn/start",
+    ]);
+  });
+
   it("keeps failed dictated replies visible for retry", async () => {
     const harness = loadPkjs({
       codexJobsSettings: JSON.stringify({
@@ -468,8 +495,6 @@ describe("native C PKJS bridge", () => {
           if (threadId !== "thr_2")
             return threadReadFixture(threadId);
           if (readCount === 1)
-            return threadReadFixture(threadId);
-          if (readCount === 2)
             return activeReplyThreadFixture(threadId);
           return completedThreadFixture(threadId, "Continued with the fix.");
         },
@@ -481,14 +506,23 @@ describe("native C PKJS bridge", () => {
       await vi.waitFor(() => {
         expect(lastMessageOfType(harness, "detail_update")?.[1]).toContain("You: please continue");
       });
+      await vi.waitFor(() => {
+        expect(lastMessageOfType(harness, "sync_status")?.[1]).toBe("Reply sent");
+      });
 
-      await vi.advanceTimersByTimeAsync(3000);
-      harness.webSockets.at(-1).open();
+      await vi.runOnlyPendingTimersAsync();
+      await flushPromises();
+      await vi.waitFor(() => {
+        expect(lastMessageOfType(harness, "detail_update")?.[1]).toContain("Codex: working");
+      });
+
+      await vi.runOnlyPendingTimersAsync();
+      await flushPromises();
 
       await vi.waitFor(() => {
         expect(lastMessageOfType(harness, "detail_update")?.[1]).toContain("Codex: Continued with the fix.");
       });
-      expect(harness.threadReadCounts.thr_2).toBe(3);
+      expect(harness.threadReadCounts.thr_2).toBe(2);
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
@@ -507,7 +541,7 @@ describe("native C PKJS bridge", () => {
         threadReadFixture(threadId, readCount) {
           if (threadId !== "thr_2")
             return threadReadFixture(threadId);
-          if (readCount <= 2)
+          if (readCount <= 1)
             return threadReadFixture(threadId);
           return completedThreadFixture(threadId, "Finished the requested update.");
         },
@@ -521,14 +555,23 @@ describe("native C PKJS bridge", () => {
         expect(detail?.[1]).toContain("You: please continue");
         expect(detail?.[1]).toContain("Codex: working");
       });
+      await vi.waitFor(() => {
+        expect(lastMessageOfType(harness, "sync_status")?.[1]).toBe("Reply sent");
+      });
 
-      await vi.advanceTimersByTimeAsync(3000);
-      harness.webSockets.at(-1).open();
+      await vi.runOnlyPendingTimersAsync();
+      await flushPromises();
+      await vi.waitFor(() => {
+        expect(lastMessageOfType(harness, "detail_update")?.[1]).toContain("Codex: working");
+      });
+
+      await vi.runOnlyPendingTimersAsync();
+      await flushPromises();
 
       await vi.waitFor(() => {
         expect(lastMessageOfType(harness, "detail_update")?.[1]).toContain("Codex: Finished the requested update.");
       });
-      expect(harness.threadReadCounts.thr_2).toBe(3);
+      expect(harness.threadReadCounts.thr_2).toBe(2);
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
@@ -710,6 +753,11 @@ async function expectFailedConnectionMessage(message, expected) {
   await vi.waitFor(() => {
     expect(lastMessageOfType(harness, "error")?.[1]).toBe(expected);
   });
+}
+
+async function flushPromises() {
+  for (let index = 0; index < 5; index += 1)
+    await Promise.resolve();
 }
 
 function detailPayload(message) {

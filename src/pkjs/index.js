@@ -570,49 +570,73 @@ function submitReply(payload) {
   sendStatus("Sending reply", SyncState.syncing);
   sendPendingReplyUpdate(threadId, text);
   runDetailRequest("Reply", threadId, function(client) {
-    return client.request("thread/read", {
-      threadId: threadId,
-      includeTurns: true
-    }).then(function(result) {
-      var thread = result.thread || result;
-      var activeTurn = latestInProgressTurn(thread);
-      var input = [{
-        type: "text",
-        text: text,
-        text_elements: []
-      }];
-
-      if (activeTurn) {
-        return client.request("turn/steer", {
-          threadId: threadId,
-          input: input,
-          expectedTurnId: activeTurn.id
-        });
-      }
-
-      return client.request("turn/start", {
-        threadId: threadId,
-        input: input
-      });
+    return resolveReplyTarget(client, threadId).then(function(activeTurnId) {
+      return sendReplyInput(client, threadId, text, activeTurnId);
     }).then(function() {
       sendStatus("Reply sent", SyncState.syncing);
-      return client.request("thread/read", {
-        threadId: threadId,
-        includeTurns: true
-      });
-    });
-  }).then(function(result) {
-    var thread = result.thread || result;
-    sendDetailUpdate(threadId, thread);
-    if (detailNeedsFollowup(threadId, thread))
       scheduleDetailPoll(threadId, true);
-    else
-      syncJobs();
+    });
   }).catch(function(error) {
     var message = humanError(error);
     log("Reply failed", error);
     sendFailedReplyUpdate(threadId, text, message);
     sendError(message);
+  });
+}
+
+function resolveReplyTarget(client, threadId) {
+  var cached = cachedReplyTarget(threadId);
+
+  if (cached.known)
+    return Promise.resolve(cached.activeTurnId);
+
+  return client.request("thread/read", {
+    threadId: threadId,
+    includeTurns: true
+  }).then(function(result) {
+    var thread = result.thread || result;
+    var activeTurn;
+
+    cacheThreadDetail(threadId, thread);
+    activeTurn = latestInProgressTurn(thread);
+    return activeTurn ? activeTurn.id : "";
+  });
+}
+
+function cachedReplyTarget(threadId) {
+  var cache = detailPageCacheByThreadId[threadId];
+
+  if (cache && cache.knowsActiveTurn) {
+    return {
+      known: true,
+      activeTurnId: cache.activeTurnId || ""
+    };
+  }
+
+  return {
+    known: false,
+    activeTurnId: ""
+  };
+}
+
+function sendReplyInput(client, threadId, text, activeTurnId) {
+  var input = [{
+    type: "text",
+    text: text,
+    text_elements: []
+  }];
+
+  if (activeTurnId) {
+    return client.request("turn/steer", {
+      threadId: threadId,
+      input: input,
+      expectedTurnId: activeTurnId
+    });
+  }
+
+  return client.request("turn/start", {
+    threadId: threadId,
+    input: input
   });
 }
 
@@ -1121,8 +1145,11 @@ function planNotificationSummary(params) {
 
 function cacheThreadDetail(threadId, thread) {
   var cache = detailPageCacheByThreadId[threadId] || {};
+  var activeTurn = latestInProgressTurn(thread);
   rememberDetailThread(threadId);
   cache.sections = detailSections(threadId, thread);
+  cache.knowsActiveTurn = true;
+  cache.activeTurnId = activeTurn ? activeTurn.id : "";
   cache.pageStart = typeof cache.pageStart === "number" ? Math.min(cache.pageStart, cache.sections.length) : null;
   cache.pageEnd = typeof cache.pageEnd === "number" ? Math.min(cache.pageEnd, cache.sections.length) : null;
   detailPageCacheByThreadId[threadId] = cache;
