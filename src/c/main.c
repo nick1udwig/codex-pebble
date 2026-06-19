@@ -604,19 +604,6 @@ static void prv_detail_click_config_provider(void *context) {
   window_single_click_subscribe(BUTTON_ID_SELECT, prv_detail_select_handler);
 }
 
-static bool prv_point_in_layer(Layer *layer, int x, int y) {
-  GRect frame;
-  GPoint point;
-
-  if (!layer) {
-    return false;
-  }
-
-  frame = layer_get_frame(layer);
-  point = GPoint(x, y);
-  return grect_contains_point(&frame, &point);
-}
-
 static void prv_select_click(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
   if (!s_has_settings) {
     if (!s_received_state) {
@@ -702,9 +689,10 @@ static void prv_handle_main_touch_tap(int x, int y) {
 }
 
 static void prv_handle_detail_touch_tap(int x, int y) {
-  if (s_detail_footer_layer && prv_point_in_layer(text_layer_get_layer(s_detail_footer_layer), x, y)) {
-    prv_detail_select_handler(NULL, NULL);
-  }
+  (void)x;
+  (void)y;
+
+  prv_detail_select_handler(NULL, NULL);
 }
 
 static void prv_touch_handler(const TouchEvent *event, void *context) {
