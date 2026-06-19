@@ -127,11 +127,12 @@ describe("native C PKJS bridge", () => {
       wasClean: false,
     });
 
+    const expected = "Can't connect to relay. Is codex app-server running? Is relay running at ws://127.0.0.1:4501?";
     await vi.waitFor(() => {
-      expect(lastMessageOfType(harness, "sync_status")?.[1]).toBe("Offline: Cannot reach Codex relay");
+      expect(lastMessageOfType(harness, "sync_status")?.[1]).toBe(expected);
     });
     expect(messagesOfType(harness, "job_clear")).toHaveLength(clearCountBefore);
-    expect(lastMessageOfType(harness, "error")?.[1]).not.toBe("Cannot reach Codex relay");
+    expect(lastMessageOfType(harness, "error")?.[1]).not.toBe(expected);
   });
 
   it("loads more rows when the C app asks for the next page", async () => {

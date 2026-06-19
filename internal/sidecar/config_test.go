@@ -10,6 +10,9 @@ func TestNormalizeDefaultsToAuto(t *testing.T) {
 	if cfg.ListenAddr != DefaultListenAddr {
 		t.Fatalf("ListenAddr = %q, want %q", cfg.ListenAddr, DefaultListenAddr)
 	}
+	if !cfg.NeedsGeneratedToken() {
+		t.Fatalf("default ListenAddr %q should require a generated token", cfg.ListenAddr)
+	}
 }
 
 func TestNormalizeKeepsAutoWhenSocketSet(t *testing.T) {

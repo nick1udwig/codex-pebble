@@ -47,7 +47,7 @@ var SOURCE_KINDS = [
 var ProtocolByteLimit = Object.freeze({
   threadId: 95,
   title: 47,
-  detail: 95,
+  detail: 180,
   body: 600,
   payload: 720
 });
@@ -210,7 +210,7 @@ function syncJobs(options) {
       currentClient = null;
       syncInFlight = false;
       if (listThreads.length)
-        sendStatus(options.loadMore ? "Load more failed" : "Offline: " + message, SyncState.desynced);
+        sendStatus(message, SyncState.desynced);
       else
         sendError(message);
     });
@@ -1900,8 +1900,14 @@ function humanError(error) {
   if (/403|forbidden|rejected/i.test(message))
     return "Relay rejected connection";
   if (/WebSocket|Connection failed|NetworkError|ECONNREFUSED/i.test(message))
-    return "Cannot reach Codex relay";
+    return relayConnectionError();
   return message;
+}
+
+function relayConnectionError() {
+  var settings = loadSettings();
+  var url = settings.wsUrl || "the configured URL";
+  return "Can't connect to relay. Is codex app-server running? Is relay running at " + url + "?";
 }
 
 function log(message, extra) {

@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	DefaultListenAddr = "127.0.0.1:4501"
+	DefaultListenAddr = "0.0.0.0:4501"
 	DefaultUnixSocket = "~/.codex/app-server-control/app-server-control.sock"
 )
 

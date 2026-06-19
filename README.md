@@ -28,7 +28,7 @@ Native Pebble C watch app for monitoring Codex app-server jobs over WebSocket JS
    npm run dev:sidecar
    ```
 
-   By default this listens for codex-pebble at `ws://127.0.0.1:4501`. On launch it probes Codex app-server in this order, without starting Codex:
+   By default this listens on all interfaces at `0.0.0.0:4501`. On launch it probes Codex app-server in this order, without starting Codex:
 
    1. Existing Unix-socket app-server at `~/.codex/app-server-control/app-server-control.sock`.
    2. Existing stdio transport attached to the sidecar process's stdin/stdout.
@@ -41,10 +41,10 @@ Native Pebble C watch app for monitoring Codex app-server jobs over WebSocket JS
    ws://127.0.0.1:4501
    ```
 
-   For a real phone, bind the sidecar to a Tailnet-reachable or LAN address and use a token:
+   For a real phone, configure the watch with a Tailnet-reachable or LAN URL for the machine running the sidecar. Default non-loopback binds generate a token; pass your own token if you want it stable:
 
    ```sh
-   npm run dev:sidecar -- --listen <tailnet-ip-or-host>:4501 --token <shared-token>
+   npm run dev:sidecar -- --token <shared-token>
    ```
 
    Configure the watch with:
