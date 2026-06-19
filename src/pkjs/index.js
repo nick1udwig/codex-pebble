@@ -271,7 +271,7 @@ function sendJobs(threads, settings, result) {
 
 function sendJobItem(thread) {
   var id = sanitizeField(thread.id || thread.sessionId || "", ProtocolByteLimit.threadId);
-  var kind = sanitizeField(threadStatusText(thread), 15);
+  var kind = sanitizeField(threadStateLabel(thread), 15);
   var title = sanitizeField(listTitle(thread), ProtocolByteLimit.title);
   var detail = sanitizeField(listDetail(thread), ProtocolByteLimit.detail);
 

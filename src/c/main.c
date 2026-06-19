@@ -73,6 +73,7 @@ typedef struct {
   bool detail_has_prev;
   bool detail_has_next;
   bool detail_page_pending;
+  bool unread_done;
   CodexDetailRequest detail_pending_request;
   CodexDetailAnchor detail_anchor;
 } CodexJob;
@@ -121,6 +122,9 @@ static void prv_detail_click_config_provider(void *context);
 static void prv_schedule_ready_timer(uint32_t delay_ms);
 static void prv_touch_handler(const TouchEvent *event, void *context);
 static bool prv_is_detail_anchor(const char *value);
+static bool prv_job_is_working_kind(const char *kind);
+static bool prv_job_needs_attention_kind(const char *kind);
+static void prv_format_job_title(CodexJob *job, char *dest, size_t dest_size);
 static void prv_prepare_detail_load(CodexJob *job);
 static const char *prv_selected_detail_text(CodexJob *job);
 static void prv_apply_detail_text(CodexJob *job, const char *body, CodexDetailMerge merge, CodexDetailAnchor anchor);
@@ -155,6 +159,34 @@ static const char *prv_next_field(char **cursor) {
 
 static bool prv_string_is_truthy(const char *value) {
   return value && value[0] == '1';
+}
+
+static bool prv_job_is_working_kind(const char *kind) {
+  return kind && (strcmp(kind, "working") == 0 || strcmp(kind, "active") == 0 || strcmp(kind, "running") == 0);
+}
+
+static bool prv_job_needs_attention_kind(const char *kind) {
+  return kind && (strcmp(kind, "approval") == 0 || strcmp(kind, "input") == 0 ||
+                  strcmp(kind, "error") == 0 || strcmp(kind, "systemError") == 0);
+}
+
+static void prv_format_job_title(CodexJob *job, char *dest, size_t dest_size) {
+  const char *prefix = "";
+
+  if (!job) {
+    prv_copy_string(dest, dest_size, "");
+    return;
+  }
+
+  if (prv_job_needs_attention_kind(job->kind)) {
+    prefix = "! ";
+  } else if (prv_job_is_working_kind(job->kind)) {
+    prefix = "* ";
+  } else if (job->unread_done) {
+    prefix = ". ";
+  }
+
+  snprintf(dest, dest_size, "%s%s", prefix, job->title);
 }
 
 static bool prv_is_detail_anchor(const char *value) {
@@ -378,6 +410,10 @@ static void prv_handle_job_item(const char *payload) {
   char detail[CODEX_DETAIL_LENGTH];
   CodexJob *job;
   bool is_new_job = false;
+  bool was_working = false;
+  bool needs_attention_before = false;
+  bool needs_attention_after = false;
+  bool is_selected_thread = false;
 
   prv_copy_string(buffer, sizeof(buffer), payload);
   prv_copy_string(id, sizeof(id), prv_next_field(&cursor));
@@ -396,7 +432,13 @@ static void prv_handle_job_item(const char *payload) {
     }
     job = &s_jobs[s_job_count++];
     is_new_job = true;
+  } else {
+    was_working = prv_job_is_working_kind(job->kind);
+    needs_attention_before = prv_job_needs_attention_kind(job->kind);
   }
+
+  is_selected_thread = s_selected_job_id[0] && strcmp(id, s_selected_job_id) == 0;
+  needs_attention_after = prv_job_needs_attention_kind(kind);
 
   prv_copy_string(job->id, sizeof(job->id), id);
   prv_copy_string(job->kind, sizeof(job->kind), kind);
@@ -411,10 +453,18 @@ static void prv_handle_job_item(const char *payload) {
     job->detail_has_prev = false;
     job->detail_has_next = false;
     job->detail_page_pending = false;
+    job->unread_done = false;
     job->detail_pending_request = CodexDetailRequestNone;
     job->detail_anchor = CodexDetailAnchorBottom;
+  } else if (is_selected_thread) {
+    job->unread_done = false;
+  } else if (was_working && !prv_job_is_working_kind(kind) && !needs_attention_after) {
+    job->unread_done = true;
+    vibes_short_pulse();
+  } else if (!needs_attention_before && needs_attention_after) {
+    vibes_double_pulse();
   }
-  if (s_selected_job_id[0] && strcmp(job->id, s_selected_job_id) == 0) {
+  if (is_selected_thread) {
     s_selected_job = (int)(job - s_jobs);
   }
 }
@@ -488,6 +538,7 @@ static void prv_handle_detail_update(const char *payload) {
   }
 
   prv_apply_detail_text(job, body, merge, page_anchor);
+  job->unread_done = false;
   job->detail_page_pending = false;
   job->detail_pending_request = CodexDetailRequestNone;
   if (s_detail_footer_layer) {
@@ -648,7 +699,9 @@ static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
   }
 
   CodexJob *job = &s_jobs[cell_index->row];
-  menu_cell_basic_draw(ctx, cell_layer, job->title, job->detail, NULL);
+  char title[CODEX_TITLE_LENGTH + 4];
+  prv_format_job_title(job, title, sizeof(title));
+  menu_cell_basic_draw(ctx, cell_layer, title, job->detail, NULL);
 }
 
 static void prv_update_detail_layers(void) {
@@ -925,6 +978,7 @@ static void prv_select_click(MenuLayer *menu_layer, MenuIndex *cell_index, void 
 
   s_selected_job = cell_index->row;
   prv_copy_string(s_selected_job_id, sizeof(s_selected_job_id), s_jobs[s_selected_job].id);
+  s_jobs[s_selected_job].unread_done = false;
   prv_prepare_detail_load(&s_jobs[s_selected_job]);
   if (!s_detail_window) {
     s_detail_window = window_create();

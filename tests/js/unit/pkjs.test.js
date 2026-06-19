@@ -80,9 +80,9 @@ describe("native C PKJS bridge", () => {
     });
 
     const row = harness.sentMessages.find(message => message[0] === "job_item");
-    expect(row[1]).toContain("thr_1|active|codex-pebble  working|Fix deploy preview");
+    expect(row[1]).toContain("thr_1|working|codex-pebble  working|Fix deploy preview");
     const notLoadedRow = harness.sentMessages.find(message => String(message[1]).startsWith("thr_2|"));
-    expect(notLoadedRow[1]).toContain("thr_2|notLoaded|repo  saved|Review tests in detail");
+    expect(notLoadedRow[1]).toContain("thr_2|saved|repo  saved|Review tests in detail");
     expect(harness.sentMessages.at(-1)).toMatchObject({
       0: "job_complete",
       1: "2|1",
