@@ -47,8 +47,8 @@ var ProtocolByteLimit = Object.freeze({
   threadId: 95,
   title: 47,
   detail: 95,
-  body: 360,
-  payload: 460
+  body: 600,
+  payload: 720
 });
 
 var MAX_WATCH_ROWS = 16;
@@ -272,7 +272,9 @@ function submitReply(payload) {
   }
 
   setActiveDetailThread(threadId);
+  pendingReplyTextByThreadId[threadId] = text;
   sendStatus("Sending reply", SyncState.syncing);
+  sendPendingReplyUpdate(threadId, text);
   runDetailRequest("Reply", threadId, function(client) {
     return client.request("thread/read", {
       threadId: threadId,
@@ -299,9 +301,7 @@ function submitReply(payload) {
         input: input
       });
     }).then(function() {
-      pendingReplyTextByThreadId[threadId] = text;
       sendStatus("Reply sent", SyncState.syncing);
-      sendPendingReplyUpdate(threadId, text);
       return client.request("thread/read", {
         threadId: threadId,
         includeTurns: true
@@ -436,14 +436,15 @@ function sendDetailUpdate(threadId, thread) {
 }
 
 function sendPendingReplyUpdate(threadId, text) {
-  sendDetailBody(threadId, appendPendingReply(lastDetailBodyByThreadId[threadId], text), SyncState.syncing);
+  sendDetailBody(threadId, pendingReplyBody(text, "Codex: working..."), SyncState.syncing);
 }
 
 function sendDetailBody(threadId, body, syncState) {
-  lastDetailBodyByThreadId[threadId] = body;
+  var formattedBody = sanitizeDetailBody(body, ProtocolByteLimit.body);
+  lastDetailBodyByThreadId[threadId] = formattedBody;
   sendEnvelope(
     MessageType.detailUpdate,
-    truncateUtf8([sanitizeField(threadId, ProtocolByteLimit.threadId), sanitizeBody(body, ProtocolByteLimit.body)].join("|"), ProtocolByteLimit.payload),
+    truncateUtf8([sanitizeField(threadId, ProtocolByteLimit.threadId), formattedBody].join("|"), ProtocolByteLimit.payload),
     0,
     syncState
   );
@@ -616,6 +617,11 @@ function handleItemCompleted(params) {
   if (bodyContainsLine(body, summary))
     return;
 
+  if (pendingReplyTextByThreadId[threadId] && item && item.type !== "userMessage") {
+    sendDetailBody(threadId, pendingReplyBody(pendingReplyTextByThreadId[threadId], summary), SyncState.syncing);
+    return;
+  }
+
   sendDetailBody(threadId, appendWithReservedSuffix(body, summary), SyncState.syncing);
 }
 
@@ -659,6 +665,12 @@ function sendLiveProgress(threadId, line) {
 
   if (!threadId || !line)
     return;
+
+  if (pendingReplyTextByThreadId[threadId]) {
+    liveProgressLineByThreadId[threadId] = line;
+    sendDetailBody(threadId, pendingReplyBody(pendingReplyTextByThreadId[threadId], line), SyncState.syncing);
+    return;
+  }
 
   body = clearLiveProgress(threadId);
   liveProgressLineByThreadId[threadId] = line;
@@ -734,7 +746,7 @@ function detailBody(threadId, thread) {
 
   if (pendingText) {
     if (!threadContainsUserText(thread, pendingText))
-      body = appendPendingReply(body, pendingText);
+      body = pendingReplyBody(pendingText, "Codex: working...");
     else if (!threadHasReplyResult(thread, pendingText) && !bodyContainsWorkingIndicator(body))
       body = appendWithReservedSuffix(body, "Codex: working...");
   } else if (threadNeedsFollowup(thread) && !bodyContainsWorkingIndicator(body)) {
@@ -744,17 +756,13 @@ function detailBody(threadId, thread) {
   return body;
 }
 
-function appendPendingReply(body, text) {
-  var suffix = [];
+function pendingReplyBody(text, progressLine) {
+  var userLine = "You: " + String(text || "").trim();
+  var progress = String(progressLine || "").trim();
 
-  if (!bodyContainsUserText(body, text))
-    suffix.push("You: " + text);
-  if (!bodyContainsWorkingIndicator(body))
-    suffix.push("Codex: working...");
-
-  if (!suffix.length)
-    return String(body || "");
-  return appendWithReservedSuffix(body, suffix.join("\n\n"));
+  if (!progress)
+    return userLine;
+  return joinPreservingPrefix(userLine, progress, ProtocolByteLimit.body);
 }
 
 function appendWithReservedSuffix(body, suffix) {
@@ -772,6 +780,23 @@ function appendWithReservedSuffix(body, suffix) {
     return addition;
 
   return truncateUtf8(base, maxBaseBytes).trim() + "\n\n" + addition;
+}
+
+function joinPreservingPrefix(prefix, suffix, maxBytes) {
+  var head = String(prefix || "").trim();
+  var tail = String(suffix || "").trim();
+  var separator = "\n\n";
+  var tailMaxBytes;
+
+  if (!head)
+    return truncateUtf8(tail, maxBytes);
+  if (!tail)
+    return truncateUtf8(head, maxBytes);
+
+  tailMaxBytes = maxBytes - utf8ByteLength(head) - utf8ByteLength(separator);
+  if (tailMaxBytes <= 0)
+    return truncateUtf8(head, maxBytes);
+  return head + separator + truncateUtf8(tail, tailMaxBytes);
 }
 
 function reconcilePendingReply(threadId, thread) {
@@ -846,10 +871,6 @@ function threadContainsUserText(thread, text) {
   }
 
   return false;
-}
-
-function bodyContainsUserText(body, text) {
-  return normalizeTextForMatch(body).indexOf("you: " + normalizeTextForMatch(text)) !== -1;
 }
 
 function bodyContainsWorkingIndicator(body) {
@@ -1041,16 +1062,53 @@ function sanitizeField(value, maxBytes) {
   );
 }
 
-function sanitizeBody(value, maxBytes) {
-  return truncateUtf8(
-    String(value == null ? "" : value)
-      .replace(/\|/g, "/")
-      .replace(/\r\n/g, "\n")
-      .replace(/\r/g, "\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim(),
-    maxBytes
-  );
+function sanitizeDetailBody(value, maxBytes) {
+  var text = String(value == null ? "" : value)
+    .replace(/\|/g, "/")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  if (utf8ByteLength(text) <= maxBytes)
+    return text;
+  return fitRecentDetailBody(text, maxBytes);
+}
+
+function fitRecentDetailBody(text, maxBytes) {
+  var sections = String(text || "").split(/\n\n+/);
+  var selected = [];
+  var candidate;
+  var index;
+
+  if (!sections.length)
+    return truncateUtf8(text, maxBytes);
+
+  if (/^you:/i.test(sections[0]) && sections.length > 1 && !hasLaterUserSection(sections))
+    return joinPreservingPrefix(sections[0], sections.slice(1).join("\n\n"), maxBytes);
+
+  for (index = sections.length - 1; index >= 0; index -= 1) {
+    candidate = [sections[index]].concat(selected).join("\n\n");
+    if (utf8ByteLength(candidate) <= maxBytes) {
+      selected.unshift(sections[index]);
+    } else if (!selected.length) {
+      return truncateUtf8(sections[index], maxBytes);
+    } else {
+      break;
+    }
+  }
+
+  return selected.join("\n\n");
+}
+
+function hasLaterUserSection(sections) {
+  var index;
+
+  for (index = 1; index < sections.length; index += 1) {
+    if (/^you:/i.test(sections[index]))
+      return true;
+  }
+  return false;
 }
 
 function splitPayload(payload) {
