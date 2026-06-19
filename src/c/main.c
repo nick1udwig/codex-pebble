@@ -10,10 +10,11 @@
 #define CODEX_ID_LENGTH 96
 #define CODEX_TITLE_LENGTH 48
 #define CODEX_DETAIL_LENGTH 96
-#define CODEX_BODY_LENGTH 384
+#define CODEX_BODY_LENGTH 640
+#define CODEX_DETAIL_PAYLOAD_LENGTH 768
 #define CODEX_REPLY_LENGTH 256
 #define CODEX_STATUS_LENGTH 64
-#define CODEX_DETAIL_TEXT_MEASURE_HEIGHT 1200
+#define CODEX_DETAIL_TEXT_MEASURE_HEIGHT 1600
 #define CODEX_DETAIL_TEXT_PADDING 4
 #define CODEX_READY_INITIAL_DELAY_MS 300
 #define CODEX_READY_RETRY_DELAY_MS 1000
@@ -64,6 +65,7 @@ static DictationSession *s_dictation_session;
 #endif
 
 static CodexJob s_jobs[CODEX_MAX_JOBS];
+static char s_detail_payload_buffer[CODEX_DETAIL_PAYLOAD_LENGTH];
 static size_t s_job_count;
 static int s_selected_job = -1;
 static char s_selected_job_id[CODEX_ID_LENGTH];
@@ -231,13 +233,12 @@ static void prv_handle_job_complete(const char *payload) {
 }
 
 static void prv_handle_detail_update(const char *payload) {
-  char buffer[512];
-  char *cursor = buffer;
+  char *cursor = s_detail_payload_buffer;
   const char *id;
   const char *body;
   CodexJob *job;
 
-  prv_copy_string(buffer, sizeof(buffer), payload);
+  prv_copy_string(s_detail_payload_buffer, sizeof(s_detail_payload_buffer), payload);
   id = prv_next_field(&cursor);
   body = prv_next_field(&cursor);
   job = prv_find_job_by_id(id);
@@ -503,7 +504,7 @@ static void prv_detail_window_load(Window *window) {
   layer_add_child(root, scroll_layer_get_layer(s_detail_scroll_layer));
 
   s_detail_body_layer = text_layer_create(GRect(0, 0, body_frame.size.w, body_frame.size.h));
-  text_layer_set_font(s_detail_body_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
+  text_layer_set_font(s_detail_body_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
   text_layer_set_overflow_mode(s_detail_body_layer, GTextOverflowModeWordWrap);
   text_layer_set_background_color(s_detail_body_layer, GColorClear);
   scroll_layer_add_child(s_detail_scroll_layer, text_layer_get_layer(s_detail_body_layer));

@@ -174,6 +174,10 @@ describe("native C PKJS bridge", () => {
     });
 
     harness.listeners.appmessage({ payload: { 0: "reply", 1: "thr_2|please continue" } });
+    const immediateDetail = lastMessageOfType(harness, "detail_update");
+    expect(immediateDetail[1]).toContain("thr_2|You: please continue");
+    expect(immediateDetail[1]).toContain("Codex: working");
+
     harness.webSockets[0].open();
 
     await vi.waitFor(() => {
@@ -251,6 +255,60 @@ describe("native C PKJS bridge", () => {
       threadId: "thr_1",
       expectedTurnId: "turn_active",
       input: [{ type: "text", text: "focus on tests", text_elements: [] }],
+    });
+  });
+
+  it("keeps dictated text before live agent deltas", async () => {
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 2,
+        recentCompletionLookbackMinutes: 720,
+      }),
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "reply", 1: "thr_2|please continue" } });
+    harness.webSockets[0].open();
+
+    await vi.waitFor(() => {
+      expect(harness.webSockets[0].sentJson.some(message => message.method === "turn/start")).toBe(true);
+    });
+
+    harness.webSockets[0].notify("item/agentMessage/delta", {
+      threadId: "thr_2",
+      turnId: "turn_live",
+      itemId: "item_live",
+      delta: "Streaming response",
+    });
+
+    await vi.waitFor(() => {
+      const detail = lastMessageOfType(harness, "detail_update");
+      expect(detail?.[1]).toContain("You: please continue");
+      expect(detail?.[1]).toContain("Codex: Streaming response");
+      expect(detail[1].indexOf("You: please continue")).toBeLessThan(detail[1].indexOf("Codex: Streaming response"));
+    });
+  });
+
+  it("drops old detail text before truncating the newest response", async () => {
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 2,
+        recentCompletionLookbackMinutes: 720,
+      }),
+    }, {
+      threadReadFixture(threadId) {
+        return longHistoryThreadFixture(threadId);
+      },
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "detail_request", 1: "thr_2" } });
+    harness.webSockets[0].open();
+
+    await vi.waitFor(() => {
+      const detail = lastMessageOfType(harness, "detail_update");
+      expect(detail?.[1]).toContain("Codex: Latest useful response");
+      expect(detail?.[1]).not.toContain("OLD stale context");
     });
   });
 
@@ -665,6 +723,48 @@ function activeReplyThreadFixture(threadId) {
         },
       ],
     }],
+  };
+}
+
+function longHistoryThreadFixture(threadId) {
+  return {
+    id: threadId,
+    status: { type: "idle" },
+    preview: "Review tests in detail",
+    turns: [
+      {
+        id: "turn_old",
+        status: "completed",
+        items: [
+          {
+            type: "userMessage",
+            id: "item_old_user",
+            content: [{ type: "text", text: "OLD stale context " + "before ".repeat(60), text_elements: [] }],
+          },
+          {
+            type: "agentMessage",
+            id: "item_old_agent",
+            text: "OLD stale context " + "after ".repeat(60),
+          },
+        ],
+      },
+      {
+        id: "turn_new",
+        status: "completed",
+        items: [
+          {
+            type: "userMessage",
+            id: "item_new_user",
+            content: [{ type: "text", text: "What changed?", text_elements: [] }],
+          },
+          {
+            type: "agentMessage",
+            id: "item_new_agent",
+            text: "Latest useful response " + "with more detail ".repeat(20),
+          },
+        ],
+      },
+    ],
   };
 }
 
