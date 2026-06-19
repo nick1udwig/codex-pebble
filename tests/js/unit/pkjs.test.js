@@ -95,6 +95,23 @@ describe("native C PKJS bridge", () => {
     });
   });
 
+  it("syncs threads when PKJS becomes ready without waiting for a watch button press", async () => {
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 2,
+        recentCompletionLookbackMinutes: 720,
+      }),
+    });
+
+    harness.listeners.ready({});
+    expect(harness.webSockets).toHaveLength(1);
+    harness.webSockets[0].open();
+
+    await vi.waitFor(() => expect(lastMessageOfType(harness, "job_complete")?.[1]).toBe("2|1"));
+    expect(harness.webSockets[0].sentJson.find(message => message.method === "thread/list").params.limit).toBe(2);
+  });
+
   it("loads more rows when the C app asks for the next page", async () => {
     const harness = loadPkjs({
       codexJobsSettings: JSON.stringify({
@@ -166,6 +183,42 @@ describe("native C PKJS bridge", () => {
       input: [{ type: "text", text: "please continue", text_elements: [] }],
     });
     expect(harness.sentMessages.some(message => message[0] === "sync_status" && message[1] === "Reply sent")).toBe(true);
+  });
+
+  it("keeps long thread ids intact when sending dictated replies", async () => {
+    const longThreadId = "thread-" + "a".repeat(70);
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 2,
+        recentCompletionLookbackMinutes: 720,
+      }),
+    }, {
+      threads: [{
+        id: longThreadId,
+        name: "Long id thread",
+        preview: "Long id thread",
+        status: { type: "idle" },
+        source: "cli",
+        cwd: "/tmp/long-id",
+      }],
+      threadReadFixture(threadId) {
+        return completedThreadFixture(threadId, "Ready.");
+      },
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "app_ready" } });
+    harness.webSockets[0].open();
+    await vi.waitFor(() => expect(lastMessageOfType(harness, "job_item")?.[1]).toContain(longThreadId + "|"));
+
+    harness.listeners.appmessage({ payload: { 0: "reply", 1: longThreadId + "|hello long id" } });
+    const replySocket = harness.webSockets.at(-1);
+    replySocket.open();
+
+    await vi.waitFor(() => expect(replySocket.sentJson.some(message => message.method === "turn/start")).toBe(true));
+    const turnStart = replySocket.sentJson.find(message => message.method === "turn/start");
+    expect(turnStart.params.threadId).toBe(longThreadId);
+    expect(turnStart.params.input).toEqual([{ type: "text", text: "hello long id", text_elements: [] }]);
   });
 
   it("steers an in-progress turn for dictated replies on active threads", async () => {
@@ -276,7 +329,7 @@ function loadPkjs(initialStorage = {}, options = {}) {
   const webSockets = [];
   const storage = new Map(Object.entries(initialStorage));
   const threadReadCounts = {};
-  const threads = [
+  const threads = options.threads || [
     {
       id: "thr_1",
       name: "Fix deploy",

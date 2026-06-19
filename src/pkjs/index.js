@@ -44,6 +44,7 @@ var SOURCE_KINDS = [
 ];
 
 var ProtocolByteLimit = Object.freeze({
+  threadId: 95,
   title: 47,
   detail: 95,
   body: 360,
@@ -66,7 +67,7 @@ var detailPollInFlight = false;
 var lastDetailBodyByThreadId = {};
 
 Pebble.addEventListener("ready", function() {
-  sendSettingsState();
+  syncJobs({ reset: true });
 });
 
 Pebble.addEventListener("appmessage", function(event) {
@@ -183,7 +184,7 @@ function sendJobs(threads, settings, result) {
 }
 
 function sendJobItem(thread) {
-  var id = sanitizeField(thread.id || thread.sessionId || "", 36);
+  var id = sanitizeField(thread.id || thread.sessionId || "", ProtocolByteLimit.threadId);
   var kind = sanitizeField(threadStatusText(thread), 15);
   var title = sanitizeField(thread.name || firstLine(thread.preview) || thread.cwd || "Codex thread", ProtocolByteLimit.title);
   var detail = sanitizeField(listDetail(thread), ProtocolByteLimit.detail);
@@ -231,7 +232,7 @@ function firstLine(text) {
 }
 
 function requestThreadDetail(threadId) {
-  threadId = sanitizeField(threadId, 64);
+  threadId = sanitizeField(threadId, ProtocolByteLimit.threadId);
   if (!threadId)
     return;
 
@@ -255,7 +256,7 @@ function requestThreadDetail(threadId) {
 
 function submitReply(payload) {
   var fields = splitPayload(payload || "");
-  var threadId = sanitizeField(fields[0], 64);
+  var threadId = sanitizeField(fields[0], ProtocolByteLimit.threadId);
   var text = String(fields[1] || "").trim();
 
   if (!threadId || !text) {
@@ -335,7 +336,7 @@ function sendDetailUpdate(threadId, thread) {
   lastDetailBodyByThreadId[threadId] = body;
   sendEnvelope(
     MessageType.detailUpdate,
-    truncateUtf8([sanitizeField(threadId, 64), sanitizeBody(body, ProtocolByteLimit.body)].join("|"), ProtocolByteLimit.payload),
+    truncateUtf8([sanitizeField(threadId, ProtocolByteLimit.threadId), sanitizeBody(body, ProtocolByteLimit.body)].join("|"), ProtocolByteLimit.payload),
     0,
     SyncState.synced
   );
@@ -349,7 +350,7 @@ function sendDetailUpdateIfChanged(threadId, thread) {
   lastDetailBodyByThreadId[threadId] = body;
   sendEnvelope(
     MessageType.detailUpdate,
-    truncateUtf8([sanitizeField(threadId, 64), sanitizeBody(body, ProtocolByteLimit.body)].join("|"), ProtocolByteLimit.payload),
+    truncateUtf8([sanitizeField(threadId, ProtocolByteLimit.threadId), sanitizeBody(body, ProtocolByteLimit.body)].join("|"), ProtocolByteLimit.payload),
     0,
     SyncState.synced
   );
