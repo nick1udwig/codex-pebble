@@ -10,7 +10,6 @@ describe("native C PKJS bridge", () => {
       codexJobsSettings: JSON.stringify({
         wsUrl: "ws://127.0.0.1:4501",
         displayLimit: 4,
-        recentCompletionLookbackMinutes: 120,
       }),
     });
 
@@ -22,7 +21,6 @@ describe("native C PKJS bridge", () => {
     expect(JSON.parse(decodeURIComponent(new URL(url).searchParams.get("settings")))).toEqual({
       wsUrl: "ws://127.0.0.1:4501",
       displayLimit: 4,
-      recentCompletionLookbackMinutes: 120,
     });
   });
 
@@ -32,14 +30,12 @@ describe("native C PKJS bridge", () => {
       response: encodeURIComponent(JSON.stringify({
         wsUrl: "",
         displayLimit: 99,
-        recentCompletionLookbackMinutes: 1,
       })),
     });
 
     expect(JSON.parse(harness.localStorage.getItem("codexJobsSettings"))).toEqual({
       wsUrl: "",
       displayLimit: 8,
-      recentCompletionLookbackMinutes: 5,
     });
     expect(harness.sentMessages.at(-2)).toMatchObject({
       0: "settings_state",
@@ -65,7 +61,6 @@ describe("native C PKJS bridge", () => {
       codexJobsSettings: JSON.stringify({
         wsUrl: "ws://127.0.0.1:4501",
         displayLimit: 2,
-        recentCompletionLookbackMinutes: 720,
       }),
     });
 
@@ -100,7 +95,6 @@ describe("native C PKJS bridge", () => {
       codexJobsSettings: JSON.stringify({
         wsUrl: "ws://127.0.0.1:4501",
         displayLimit: 2,
-        recentCompletionLookbackMinutes: 720,
       }),
     });
 
@@ -117,7 +111,6 @@ describe("native C PKJS bridge", () => {
       codexJobsSettings: JSON.stringify({
         wsUrl: "ws://127.0.0.1:4501",
         displayLimit: 2,
-        recentCompletionLookbackMinutes: 720,
       }),
     });
 
@@ -143,7 +136,6 @@ describe("native C PKJS bridge", () => {
       codexJobsSettings: JSON.stringify({
         wsUrl: "ws://127.0.0.1:4501",
         displayLimit: 3,
-        recentCompletionLookbackMinutes: 720,
       }),
     }, {
       threads: [
@@ -201,7 +193,6 @@ describe("native C PKJS bridge", () => {
       codexJobsSettings: JSON.stringify({
         wsUrl: "ws://127.0.0.1:4501",
         displayLimit: 2,
-        recentCompletionLookbackMinutes: 720,
       }),
     });
 
@@ -235,7 +226,6 @@ describe("native C PKJS bridge", () => {
       codexJobsSettings: JSON.stringify({
         wsUrl: "ws://127.0.0.1:4501",
         displayLimit: 2,
-        recentCompletionLookbackMinutes: 720,
       }),
     });
 
@@ -266,7 +256,6 @@ describe("native C PKJS bridge", () => {
       codexJobsSettings: JSON.stringify({
         wsUrl: "ws://127.0.0.1:4501",
         displayLimit: 2,
-        recentCompletionLookbackMinutes: 720,
       }),
     }, {
       threads: [{
@@ -301,7 +290,6 @@ describe("native C PKJS bridge", () => {
       codexJobsSettings: JSON.stringify({
         wsUrl: "ws://127.0.0.1:4501",
         displayLimit: 2,
-        recentCompletionLookbackMinutes: 720,
       }),
     }, {
       threadReadFixture(threadId, readCount) {
@@ -331,7 +319,6 @@ describe("native C PKJS bridge", () => {
       codexJobsSettings: JSON.stringify({
         wsUrl: "ws://127.0.0.1:4501",
         displayLimit: 2,
-        recentCompletionLookbackMinutes: 720,
       }),
     });
 
@@ -362,7 +349,6 @@ describe("native C PKJS bridge", () => {
       codexJobsSettings: JSON.stringify({
         wsUrl: "ws://127.0.0.1:4501",
         displayLimit: 2,
-        recentCompletionLookbackMinutes: 720,
       }),
     }, {
       threadReadFixture(threadId) {
@@ -386,7 +372,6 @@ describe("native C PKJS bridge", () => {
       codexJobsSettings: JSON.stringify({
         wsUrl: "ws://127.0.0.1:4501",
         displayLimit: 2,
-        recentCompletionLookbackMinutes: 720,
       }),
     }, {
       threadReadFixture(threadId) {
@@ -428,7 +413,6 @@ describe("native C PKJS bridge", () => {
         codexJobsSettings: JSON.stringify({
           wsUrl: "ws://127.0.0.1:4501",
           displayLimit: 2,
-          recentCompletionLookbackMinutes: 720,
         }),
       }, {
         threadReadFixture(threadId, readCount) {
@@ -469,7 +453,6 @@ describe("native C PKJS bridge", () => {
         codexJobsSettings: JSON.stringify({
           wsUrl: "ws://127.0.0.1:4501",
           displayLimit: 2,
-          recentCompletionLookbackMinutes: 720,
         }),
       }, {
         threadReadFixture(threadId, readCount) {
@@ -508,7 +491,6 @@ describe("native C PKJS bridge", () => {
       codexJobsSettings: JSON.stringify({
         wsUrl: "ws://127.0.0.1:4501",
         displayLimit: 2,
-        recentCompletionLookbackMinutes: 720,
       }),
     });
 
@@ -533,7 +515,6 @@ describe("native C PKJS bridge", () => {
       codexJobsSettings: JSON.stringify({
         wsUrl: "ws://127.0.0.1:4501",
         displayLimit: 2,
-        recentCompletionLookbackMinutes: 720,
       }),
     });
 
@@ -574,7 +555,6 @@ describe("native C PKJS bridge", () => {
         codexJobsSettings: JSON.stringify({
           wsUrl: "ws://127.0.0.1:4501",
           displayLimit: 2,
-          recentCompletionLookbackMinutes: 720,
         }),
       });
 
@@ -621,7 +601,6 @@ describe("native C PKJS bridge", () => {
       codexJobsSettings: JSON.stringify({
         wsUrl: "ws://127.0.0.1:4501",
         displayLimit: 2,
-        recentCompletionLookbackMinutes: 720,
       }),
     }, {
       threadReadFixture(threadId, readCount) {

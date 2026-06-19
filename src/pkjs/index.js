@@ -53,6 +53,7 @@ var ProtocolByteLimit = Object.freeze({
 });
 
 var MAX_WATCH_ROWS = 16;
+var DETAIL_CACHE_LIMIT = 5;
 var DETAIL_POLL_INTERVAL_MS = 3000;
 var DETAIL_POLL_MAX_ATTEMPTS = 20;
 var SEND_QUEUE_MAX = 32;
@@ -74,6 +75,7 @@ var activeDetailThreadId = "";
 var detailPollTimer = null;
 var detailPollAttempts = 0;
 var detailPollInFlight = false;
+var detailCacheOrder = [];
 var lastDetailBodyByThreadId = {};
 var detailPageCacheByThreadId = {};
 var pendingReplyTextByThreadId = {};
@@ -699,26 +701,6 @@ function isClientOpen(client) {
   return Boolean(client && client.ws && client.ws.readyState === 1);
 }
 
-function runCodexRequest(label, callback) {
-  var settings = loadSettings();
-  var client;
-
-  if (!settings.wsUrl)
-    return Promise.reject(new Error("Set server URL"));
-
-  client = new JsonRpcClient(settings.wsUrl);
-  log(label + " starting", settings.wsUrl);
-  return client.connect().then(function() {
-    return callback(client);
-  }).then(function(result) {
-    client.close();
-    return result;
-  }, function(error) {
-    client.close();
-    throw error;
-  });
-}
-
 function sendDetailUpdate(threadId, thread) {
   cacheThreadDetail(threadId, thread);
   sendDetailPage(threadId, {
@@ -737,6 +719,7 @@ function sendDetailBody(threadId, body, syncState, page) {
   var anchor = page && page.anchor ? page.anchor : "bottom";
   var hasPrev = page && page.hasPrev ? "1" : "0";
   var hasNext = page && page.hasNext ? "1" : "0";
+  rememberDetailThread(threadId);
   lastDetailBodyByThreadId[threadId] = formattedBody;
   sendEnvelope(
     MessageType.detailUpdate,
@@ -766,6 +749,7 @@ function setActiveDetailThread(threadId) {
     return;
 
   cancelQueuedLiveProgress(previousThreadId);
+  pruneLiveAgentTextForThread(previousThreadId);
   closeDetailClient();
   activeDetailThreadId = threadId;
   detailPollAttempts = 0;
@@ -947,6 +931,7 @@ function handleTurnCompleted(params) {
     return;
 
   clearLiveProgress(threadId);
+  pruneLiveAgentTextForThread(threadId);
   if (params && params.turn)
     sendDetailUpdate(threadId, { id: threadId, turns: [params.turn] });
 
@@ -1127,11 +1112,59 @@ function planNotificationSummary(params) {
 
 function cacheThreadDetail(threadId, thread) {
   var cache = detailPageCacheByThreadId[threadId] || {};
+  rememberDetailThread(threadId);
   cache.sections = detailSections(threadId, thread);
   cache.pageStart = typeof cache.pageStart === "number" ? Math.min(cache.pageStart, cache.sections.length) : null;
   cache.pageEnd = typeof cache.pageEnd === "number" ? Math.min(cache.pageEnd, cache.sections.length) : null;
   detailPageCacheByThreadId[threadId] = cache;
   return cache;
+}
+
+function rememberDetailThread(threadId) {
+  var index;
+  var evicted;
+
+  if (!threadId)
+    return;
+
+  index = detailCacheOrder.indexOf(threadId);
+  if (index !== -1)
+    detailCacheOrder.splice(index, 1);
+  detailCacheOrder.push(threadId);
+
+  while (detailCacheOrder.length > DETAIL_CACHE_LIMIT) {
+    evicted = detailCacheOrder.shift();
+    if (evicted !== threadId)
+      pruneDetailThread(evicted);
+  }
+}
+
+function pruneDetailThread(threadId) {
+  if (!threadId)
+    return;
+
+  cancelQueuedLiveProgress(threadId);
+  delete lastDetailBodyByThreadId[threadId];
+  delete detailPageCacheByThreadId[threadId];
+  delete pendingReplyTextByThreadId[threadId];
+  delete liveProgressLineByThreadId[threadId];
+  pruneLiveAgentTextForThread(threadId);
+}
+
+function pruneLiveAgentTextForThread(threadId) {
+  var prefix;
+  var keys;
+  var index;
+
+  if (!threadId)
+    return;
+
+  prefix = threadId + "|";
+  keys = Object.keys(liveAgentTextByKey);
+  for (index = 0; index < keys.length; index += 1) {
+    if (keys[index].indexOf(prefix) === 0)
+      delete liveAgentTextByKey[keys[index]];
+  }
 }
 
 function sendDetailPage(threadId, options) {
@@ -1599,8 +1632,7 @@ function readPayloadValue(payload, numericKey, namedKey) {
 function loadSettings() {
   var fallback = {
     wsUrl: "",
-    displayLimit: 3,
-    recentCompletionLookbackMinutes: 720
+    displayLimit: 3
   };
   var stored = localStorage.getItem(SETTINGS_KEY);
   if (!stored)
@@ -1620,8 +1652,7 @@ function saveSettings(settings) {
 function sanitizeSettings(settings) {
   return {
     wsUrl: typeof settings.wsUrl === "string" ? settings.wsUrl.trim() : "",
-    displayLimit: clamp(settings.displayLimit, 1, 8, 3),
-    recentCompletionLookbackMinutes: clamp(settings.recentCompletionLookbackMinutes, 5, 10080, 720)
+    displayLimit: clamp(settings.displayLimit, 1, 8, 3)
   };
 }
 

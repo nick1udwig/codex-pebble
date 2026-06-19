@@ -3,19 +3,12 @@ const STORAGE_KEY = "codex_jobs:config_state";
 const DEFAULT_SETTINGS = Object.freeze({
   wsUrl: "",
   displayLimit: 3,
-  recentCompletionLookbackMinutes: 720,
 });
 
 export function sanitizeSettings(settings = {}) {
   return {
     wsUrl: String(settings.wsUrl ?? "").trim(),
     displayLimit: clamp(settings.displayLimit, 1, 8, DEFAULT_SETTINGS.displayLimit),
-    recentCompletionLookbackMinutes: clamp(
-      settings.recentCompletionLookbackMinutes,
-      5,
-      10080,
-      DEFAULT_SETTINGS.recentCompletionLookbackMinutes,
-    ),
   };
 }
 
@@ -95,14 +88,12 @@ function readFormSettings() {
   return sanitizeSettings({
     wsUrl: document.querySelector("#wsUrl").value,
     displayLimit: document.querySelector("#displayLimit").value,
-    recentCompletionLookbackMinutes: document.querySelector("#recentCompletionLookbackMinutes").value,
   });
 }
 
 function writeFormSettings(settings) {
   document.querySelector("#wsUrl").value = settings.wsUrl;
   document.querySelector("#displayLimit").value = String(settings.displayLimit);
-  document.querySelector("#recentCompletionLookbackMinutes").value = String(settings.recentCompletionLookbackMinutes);
 }
 
 function setStatus(message, kind = "info") {
