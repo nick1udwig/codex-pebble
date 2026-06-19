@@ -55,6 +55,9 @@ var ProtocolByteLimit = Object.freeze({
 var MAX_WATCH_ROWS = 16;
 var DETAIL_POLL_INTERVAL_MS = 3000;
 var DETAIL_POLL_MAX_ATTEMPTS = 20;
+var SEND_QUEUE_MAX = 32;
+var LIVE_PROGRESS_FLUSH_MS = 300;
+var LIVE_TEXT_MAX_BYTES = ProtocolByteLimit.body - 20;
 
 var sendQueue = [];
 var sending = false;
@@ -75,6 +78,8 @@ var lastDetailBodyByThreadId = {};
 var detailPageCacheByThreadId = {};
 var pendingReplyTextByThreadId = {};
 var liveProgressLineByThreadId = {};
+var livePendingLineByThreadId = {};
+var liveFlushTimersByThreadId = {};
 var liveAgentTextByKey = {};
 
 Pebble.addEventListener("ready", function() {
@@ -755,9 +760,12 @@ function sendDetailUpdateIfChanged(threadId, thread) {
 }
 
 function setActiveDetailThread(threadId) {
+  var previousThreadId = activeDetailThreadId;
+
   if (activeDetailThreadId === threadId)
     return;
 
+  cancelQueuedLiveProgress(previousThreadId);
   closeDetailClient();
   activeDetailThreadId = threadId;
   detailPollAttempts = 0;
@@ -846,15 +854,15 @@ function handleCodexNotification(method, params) {
 
   log("Live notification", method);
   if (method === "turn/started") {
-    sendLiveProgress(threadId, "Codex: working...");
+    sendLiveProgressNow(threadId, "Codex: working...");
   } else if (method === "turn/plan/updated") {
     line = planNotificationSummary(params);
     if (line)
-      sendLiveProgress(threadId, line);
+      queueLiveProgress(threadId, line);
   } else if (method === "item/started") {
     line = itemStartedSummary(params.item);
     if (line)
-      sendLiveProgress(threadId, line);
+      queueLiveProgress(threadId, line);
   } else if (method === "item/agentMessage/delta") {
     handleAgentMessageDelta(params);
   } else if (method === "item/completed") {
@@ -863,7 +871,7 @@ function handleCodexNotification(method, params) {
     handleTurnCompleted(params);
   } else if (method === "thread/status/changed") {
     if (params && params.status)
-      sendLiveProgress(threadId, "Codex: " + threadStatusText({ status: params.status }));
+      queueLiveProgress(threadId, "Codex: " + threadStatusText({ status: params.status }));
   }
 }
 
@@ -887,9 +895,9 @@ function handleAgentMessageDelta(params) {
 
   key = [threadId, params.turnId || "", params.itemId].join("|");
   text = (liveAgentTextByKey[key] || "") + String(params.delta || "");
-  liveAgentTextByKey[key] = text;
+  liveAgentTextByKey[key] = truncateUtf8FromEnd(text, LIVE_TEXT_MAX_BYTES);
   if (text)
-    sendLiveProgress(threadId, "Codex: " + text);
+    queueLiveProgress(threadId, "Codex: " + liveAgentTextByKey[key]);
 }
 
 function handleItemCompleted(params) {
@@ -903,6 +911,7 @@ function handleItemCompleted(params) {
   if (!threadId || !summary)
     return;
 
+  cancelQueuedLiveProgress(threadId);
   if (item && item.id) {
     key = [threadId, params.turnId || "", item.id].join("|");
     delete liveAgentTextByKey[key];
@@ -997,6 +1006,39 @@ function sendLiveProgress(threadId, line) {
   body = clearLiveProgress(threadId);
   liveProgressLineByThreadId[threadId] = line;
   sendDetailBody(threadId, appendWithReservedSuffix(body, line), SyncState.syncing);
+}
+
+function sendLiveProgressNow(threadId, line) {
+  cancelQueuedLiveProgress(threadId);
+  sendLiveProgress(threadId, line);
+}
+
+function queueLiveProgress(threadId, line) {
+  if (!threadId || !line)
+    return;
+
+  livePendingLineByThreadId[threadId] = line;
+  if (liveFlushTimersByThreadId[threadId])
+    return;
+
+  liveFlushTimersByThreadId[threadId] = setTimeout(function() {
+    var pending = livePendingLineByThreadId[threadId];
+    delete livePendingLineByThreadId[threadId];
+    liveFlushTimersByThreadId[threadId] = null;
+    if (pending && threadId === activeDetailThreadId)
+      sendLiveProgress(threadId, pending);
+  }, LIVE_PROGRESS_FLUSH_MS);
+}
+
+function cancelQueuedLiveProgress(threadId) {
+  if (!threadId)
+    return;
+
+  if (liveFlushTimersByThreadId[threadId]) {
+    clearTimeout(liveFlushTimersByThreadId[threadId]);
+    liveFlushTimersByThreadId[threadId] = null;
+  }
+  delete livePendingLineByThreadId[threadId];
 }
 
 function clearLiveProgress(threadId) {
@@ -1453,8 +1495,76 @@ function sendEnvelope(type, payload, requestId, syncState) {
   message[Key.requestId] = requestId || 0;
   message[Key.syncState] = syncState == null ? SyncState.desynced : syncState;
 
-  sendQueue.push(message);
+  enqueueMessage(message);
   flushSendQueue();
+}
+
+function enqueueMessage(message) {
+  var index = coalescableQueuedMessageIndex(message);
+
+  if (index !== -1) {
+    sendQueue[index] = message;
+    return;
+  }
+
+  if (sendQueue.length >= SEND_QUEUE_MAX && !dropQueuedLowPriorityMessage()) {
+    log("send queue full", "dropping " + message[Key.messageType]);
+    return;
+  }
+
+  sendQueue.push(message);
+}
+
+function coalescableQueuedMessageIndex(message) {
+  var type = message[Key.messageType];
+  var threadId;
+  var index;
+  var start = sending ? 1 : 0;
+
+  if (type === MessageType.syncStatus || type === MessageType.settingsState) {
+    for (index = sendQueue.length - 1; index >= start; index -= 1) {
+      if (sendQueue[index][Key.messageType] === type)
+        return index;
+    }
+    return -1;
+  }
+
+  if (type !== MessageType.detailUpdate)
+    return -1;
+
+  threadId = envelopeThreadId(message);
+  if (!threadId)
+    return -1;
+
+  for (index = sendQueue.length - 1; index >= start; index -= 1) {
+    if (sendQueue[index][Key.messageType] === MessageType.detailUpdate && envelopeThreadId(sendQueue[index]) === threadId)
+      return index;
+  }
+  return -1;
+}
+
+function dropQueuedLowPriorityMessage() {
+  var start = sending ? 1 : 0;
+  var index;
+  var type;
+
+  for (index = start; index < sendQueue.length; index += 1) {
+    type = sendQueue[index][Key.messageType];
+    if (type === MessageType.detailUpdate || type === MessageType.syncStatus || type === MessageType.settingsState) {
+      log("send queue full", "dropping queued " + type);
+      sendQueue.splice(index, 1);
+      return true;
+    }
+  }
+  return false;
+}
+
+function envelopeThreadId(message) {
+  var payload = String(message && message[Key.payload] || "");
+  var separator = payload.indexOf("|");
+  if (separator === -1)
+    return payload;
+  return payload.slice(0, separator);
 }
 
 function flushSendQueue() {
@@ -1660,6 +1770,54 @@ function truncateUtf8(value, maxBytes) {
   }
 
   return text.slice(0, end);
+}
+
+function truncateUtf8FromEnd(value, maxBytes) {
+  var text = String(value == null ? "" : value);
+  var prefix = "...";
+  var targetBytes = maxBytes - utf8ByteLength(prefix);
+  var length = 0;
+  var start = text.length;
+  var index;
+  var code;
+  var previous;
+  var codeUnitLength;
+  var codeByteLength;
+
+  if (utf8ByteLength(text) <= maxBytes)
+    return text;
+  if (targetBytes <= 0)
+    return truncateUtf8(text, maxBytes);
+
+  for (index = text.length; index > 0; index -= codeUnitLength) {
+    code = text.charCodeAt(index - 1);
+    codeUnitLength = 1;
+    codeByteLength = 1;
+
+    if (code >= 0xDC00 && code <= 0xDFFF && index - 2 >= 0) {
+      previous = text.charCodeAt(index - 2);
+      if (previous >= 0xD800 && previous <= 0xDBFF) {
+        codeUnitLength = 2;
+        codeByteLength = 4;
+      } else {
+        codeByteLength = 3;
+      }
+    } else if (code <= 0x7F) {
+      codeByteLength = 1;
+    } else if (code <= 0x7FF) {
+      codeByteLength = 2;
+    } else {
+      codeByteLength = 3;
+    }
+
+    if (length + codeByteLength > targetBytes)
+      break;
+
+    length += codeByteLength;
+    start = index - codeUnitLength;
+  }
+
+  return prefix + text.slice(start);
 }
 
 function humanError(error) {

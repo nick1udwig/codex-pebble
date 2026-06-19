@@ -567,6 +567,55 @@ describe("native C PKJS bridge", () => {
     });
   });
 
+  it("coalesces rapid live agent deltas into one watch update", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = loadPkjs({
+        codexJobsSettings: JSON.stringify({
+          wsUrl: "ws://127.0.0.1:4501",
+          displayLimit: 2,
+          recentCompletionLookbackMinutes: 720,
+        }),
+      });
+
+      harness.listeners.appmessage({ payload: { 0: "detail_request", 1: "thr_2" } });
+      harness.webSockets[0].open();
+      await vi.waitFor(() => expect(lastMessageOfType(harness, "detail_update")).toBeTruthy());
+
+      const detailCountBefore = messagesOfType(harness, "detail_update").length;
+      harness.webSockets[0].notify("item/agentMessage/delta", {
+        threadId: "thr_2",
+        turnId: "turn_live",
+        itemId: "item_live",
+        delta: "One ",
+      });
+      harness.webSockets[0].notify("item/agentMessage/delta", {
+        threadId: "thr_2",
+        turnId: "turn_live",
+        itemId: "item_live",
+        delta: "two ",
+      });
+      harness.webSockets[0].notify("item/agentMessage/delta", {
+        threadId: "thr_2",
+        turnId: "turn_live",
+        itemId: "item_live",
+        delta: "three",
+      });
+
+      await vi.advanceTimersByTimeAsync(299);
+      expect(messagesOfType(harness, "detail_update")).toHaveLength(detailCountBefore);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.waitFor(() => {
+        expect(lastMessageOfType(harness, "detail_update")?.[1]).toContain("Codex: One two three");
+      });
+      expect(messagesOfType(harness, "detail_update")).toHaveLength(detailCountBefore + 1);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("refreshes final thread content when a live turn completes", async () => {
     const harness = loadPkjs({
       codexJobsSettings: JSON.stringify({
@@ -601,7 +650,11 @@ describe("native C PKJS bridge", () => {
 });
 
 function lastMessageOfType(harness, type) {
-  return harness.sentMessages.filter(message => message[0] === type).at(-1);
+  return messagesOfType(harness, type).at(-1);
+}
+
+function messagesOfType(harness, type) {
+  return harness.sentMessages.filter(message => message[0] === type);
 }
 
 function detailPayload(message) {
