@@ -149,8 +149,11 @@ describe("native C PKJS bridge", () => {
     });
 
     const methods = harness.webSockets[0].sentJson.map(message => message.method);
-    expect(methods).toEqual(["initialize", "initialized", "thread/read"]);
+    expect(methods).toEqual(["initialize", "initialized", "thread/resume", "thread/read"]);
     expect(harness.webSockets[0].sentJson[2].params).toEqual({
+      threadId: "thr_2",
+    });
+    expect(harness.webSockets[0].sentJson[3].params).toEqual({
       threadId: "thr_2",
       includeTurns: true,
     });
@@ -171,6 +174,10 @@ describe("native C PKJS bridge", () => {
     });
 
     harness.listeners.appmessage({ payload: { 0: "reply", 1: "thr_2|please continue" } });
+    const immediateDetail = lastMessageOfType(harness, "detail_update");
+    expect(immediateDetail[1]).toContain("thr_2|You: please continue");
+    expect(immediateDetail[1]).toContain("Codex: working");
+
     harness.webSockets[0].open();
 
     await vi.waitFor(() => {
@@ -251,6 +258,60 @@ describe("native C PKJS bridge", () => {
     });
   });
 
+  it("keeps dictated text before live agent deltas", async () => {
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 2,
+        recentCompletionLookbackMinutes: 720,
+      }),
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "reply", 1: "thr_2|please continue" } });
+    harness.webSockets[0].open();
+
+    await vi.waitFor(() => {
+      expect(harness.webSockets[0].sentJson.some(message => message.method === "turn/start")).toBe(true);
+    });
+
+    harness.webSockets[0].notify("item/agentMessage/delta", {
+      threadId: "thr_2",
+      turnId: "turn_live",
+      itemId: "item_live",
+      delta: "Streaming response",
+    });
+
+    await vi.waitFor(() => {
+      const detail = lastMessageOfType(harness, "detail_update");
+      expect(detail?.[1]).toContain("You: please continue");
+      expect(detail?.[1]).toContain("Codex: Streaming response");
+      expect(detail[1].indexOf("You: please continue")).toBeLessThan(detail[1].indexOf("Codex: Streaming response"));
+    });
+  });
+
+  it("drops old detail text before truncating the newest response", async () => {
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 2,
+        recentCompletionLookbackMinutes: 720,
+      }),
+    }, {
+      threadReadFixture(threadId) {
+        return longHistoryThreadFixture(threadId);
+      },
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "detail_request", 1: "thr_2" } });
+    harness.webSockets[0].open();
+
+    await vi.waitFor(() => {
+      const detail = lastMessageOfType(harness, "detail_update");
+      expect(detail?.[1]).toContain("Codex: Latest useful response");
+      expect(detail?.[1]).not.toContain("OLD stale context");
+    });
+  });
+
   it("polls thread detail after a dictated reply until the Codex result is visible", async () => {
     vi.useFakeTimers();
     try {
@@ -292,6 +353,47 @@ describe("native C PKJS bridge", () => {
     }
   });
 
+  it("keeps polling after a reply when the immediate thread read is stale", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = loadPkjs({
+        codexJobsSettings: JSON.stringify({
+          wsUrl: "ws://127.0.0.1:4501",
+          displayLimit: 2,
+          recentCompletionLookbackMinutes: 720,
+        }),
+      }, {
+        threadReadFixture(threadId, readCount) {
+          if (threadId !== "thr_2")
+            return threadReadFixture(threadId);
+          if (readCount <= 2)
+            return threadReadFixture(threadId);
+          return completedThreadFixture(threadId, "Finished the requested update.");
+        },
+      });
+
+      harness.listeners.appmessage({ payload: { 0: "reply", 1: "thr_2|please continue" } });
+      harness.webSockets[0].open();
+
+      await vi.waitFor(() => {
+        const detail = lastMessageOfType(harness, "detail_update");
+        expect(detail?.[1]).toContain("You: please continue");
+        expect(detail?.[1]).toContain("Codex: working");
+      });
+
+      await vi.advanceTimersByTimeAsync(3000);
+      harness.webSockets.at(-1).open();
+
+      await vi.waitFor(() => {
+        expect(lastMessageOfType(harness, "detail_update")?.[1]).toContain("Codex: Finished the requested update.");
+      });
+      expect(harness.threadReadCounts.thr_2).toBe(3);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("logs websocket close details for failed connections", async () => {
     const harness = loadPkjs({
       codexJobsSettings: JSON.stringify({
@@ -315,6 +417,77 @@ describe("native C PKJS bridge", () => {
 
     expect(harness.logs.some(line => line.includes("WebSocket close: type=close code=1006 reason=abnormal wasClean=false"))).toBe(true);
     expect(harness.logs.some(line => line.includes("Sync failed: WebSocket closed: type=close code=1006 reason=abnormal wasClean=false"))).toBe(true);
+  });
+
+  it("renders live app-server notifications on the active thread", async () => {
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 2,
+        recentCompletionLookbackMinutes: 720,
+      }),
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "detail_request", 1: "thr_2" } });
+    harness.webSockets[0].open();
+    await vi.waitFor(() => expect(lastMessageOfType(harness, "detail_update")).toBeTruthy());
+
+    harness.webSockets[0].notify("turn/started", {
+      threadId: "thr_2",
+      turn: { id: "turn_live", status: "inProgress", items: [] },
+    });
+    await vi.waitFor(() => {
+      expect(lastMessageOfType(harness, "detail_update")?.[1]).toContain("Codex: working");
+    });
+
+    harness.webSockets[0].notify("item/agentMessage/delta", {
+      threadId: "thr_2",
+      turnId: "turn_live",
+      itemId: "item_live",
+      delta: "Streaming",
+    });
+    harness.webSockets[0].notify("item/agentMessage/delta", {
+      threadId: "thr_2",
+      turnId: "turn_live",
+      itemId: "item_live",
+      delta: " response",
+    });
+
+    await vi.waitFor(() => {
+      expect(lastMessageOfType(harness, "detail_update")?.[1]).toContain("Codex: Streaming response");
+    });
+  });
+
+  it("refreshes final thread content when a live turn completes", async () => {
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 2,
+        recentCompletionLookbackMinutes: 720,
+      }),
+    }, {
+      threadReadFixture(threadId, readCount) {
+        if (threadId !== "thr_2")
+          return threadReadFixture(threadId);
+        if (readCount < 2)
+          return activeReplyThreadFixture(threadId);
+        return completedThreadFixture(threadId, "Live completion arrived.");
+      },
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "detail_request", 1: "thr_2" } });
+    harness.webSockets[0].open();
+    await vi.waitFor(() => expect(harness.threadReadCounts.thr_2).toBe(1));
+
+    harness.webSockets[0].notify("turn/completed", {
+      threadId: "thr_2",
+      turn: completedThreadFixture("thr_2", "Live completion arrived.").turns[0],
+    });
+
+    await vi.waitFor(() => {
+      expect(harness.threadReadCounts.thr_2).toBe(2);
+      expect(lastMessageOfType(harness, "detail_update")?.[1]).toContain("Codex: Live completion arrived.");
+    });
   });
 });
 
@@ -369,6 +542,10 @@ function loadPkjs(initialStorage = {}, options = {}) {
       this.onopen();
     }
 
+    notify(method, params = {}) {
+      this.onmessage({ data: JSON.stringify({ method, params }) });
+    }
+
     send(raw) {
       const message = JSON.parse(raw);
       this.sentJson.push(message);
@@ -383,6 +560,23 @@ function loadPkjs(initialStorage = {}, options = {}) {
             nextCursor: limit < threads.length ? "next-page" : null,
             backwardsCursor: "prev-page",
           },
+        }) });
+      } else if (message.method === "thread/resume") {
+        const threadId = message.params.threadId;
+        this.onmessage({ data: JSON.stringify({
+          id: message.id,
+          result: {
+            thread: options.threadResumeFixture
+              ? options.threadResumeFixture(threadId)
+              : options.threadReadFixture
+                ? options.threadReadFixture(threadId, 0)
+                : threadReadFixture(threadId),
+          },
+        }) });
+      } else if (message.method === "thread/unsubscribe") {
+        this.onmessage({ data: JSON.stringify({
+          id: message.id,
+          result: { status: "unsubscribed" },
         }) });
       } else if (message.method === "thread/read") {
         const threadId = message.params.threadId;
@@ -529,6 +723,48 @@ function activeReplyThreadFixture(threadId) {
         },
       ],
     }],
+  };
+}
+
+function longHistoryThreadFixture(threadId) {
+  return {
+    id: threadId,
+    status: { type: "idle" },
+    preview: "Review tests in detail",
+    turns: [
+      {
+        id: "turn_old",
+        status: "completed",
+        items: [
+          {
+            type: "userMessage",
+            id: "item_old_user",
+            content: [{ type: "text", text: "OLD stale context " + "before ".repeat(60), text_elements: [] }],
+          },
+          {
+            type: "agentMessage",
+            id: "item_old_agent",
+            text: "OLD stale context " + "after ".repeat(60),
+          },
+        ],
+      },
+      {
+        id: "turn_new",
+        status: "completed",
+        items: [
+          {
+            type: "userMessage",
+            id: "item_new_user",
+            content: [{ type: "text", text: "What changed?", text_elements: [] }],
+          },
+          {
+            type: "agentMessage",
+            id: "item_new_agent",
+            text: "Latest useful response " + "with more detail ".repeat(20),
+          },
+        ],
+      },
+    ],
   };
 }
 

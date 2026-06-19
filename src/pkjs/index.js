@@ -47,8 +47,8 @@ var ProtocolByteLimit = Object.freeze({
   threadId: 95,
   title: 47,
   detail: 95,
-  body: 360,
-  payload: 460
+  body: 600,
+  payload: 720
 });
 
 var MAX_WATCH_ROWS = 16;
@@ -59,12 +59,18 @@ var sendQueue = [];
 var sending = false;
 var syncInFlight = false;
 var currentClient = null;
+var detailClient = null;
+var detailClientThreadId = "";
+var detailClientReady = null;
 var activeListLimit = 0;
 var activeDetailThreadId = "";
 var detailPollTimer = null;
 var detailPollAttempts = 0;
 var detailPollInFlight = false;
 var lastDetailBodyByThreadId = {};
+var pendingReplyTextByThreadId = {};
+var liveProgressLineByThreadId = {};
+var liveAgentTextByKey = {};
 
 Pebble.addEventListener("ready", function() {
   syncJobs({ reset: true });
@@ -104,6 +110,7 @@ Pebble.addEventListener("webviewclosed", function(event) {
   try {
     saveSettings(JSON.parse(decoded));
     activeListLimit = 0;
+    closeDetailClient();
     sendSettingsState();
     syncJobs({ reset: true });
   } catch (error) {
@@ -238,7 +245,7 @@ function requestThreadDetail(threadId) {
 
   setActiveDetailThread(threadId);
   sendStatus("Loading thread", SyncState.syncing);
-  runCodexRequest("Thread detail", function(client) {
+  runDetailRequest("Thread detail", threadId, function(client) {
     return client.request("thread/read", {
       threadId: threadId,
       includeTurns: true
@@ -265,8 +272,10 @@ function submitReply(payload) {
   }
 
   setActiveDetailThread(threadId);
+  pendingReplyTextByThreadId[threadId] = text;
   sendStatus("Sending reply", SyncState.syncing);
-  runCodexRequest("Reply", function(client) {
+  sendPendingReplyUpdate(threadId, text);
+  runDetailRequest("Reply", threadId, function(client) {
     return client.request("thread/read", {
       threadId: threadId,
       includeTurns: true
@@ -292,7 +301,7 @@ function submitReply(payload) {
         input: input
       });
     }).then(function() {
-      sendStatus("Reply sent", SyncState.synced);
+      sendStatus("Reply sent", SyncState.syncing);
       return client.request("thread/read", {
         threadId: threadId,
         includeTurns: true
@@ -301,7 +310,7 @@ function submitReply(payload) {
   }).then(function(result) {
     var thread = result.thread || result;
     sendDetailUpdate(threadId, thread);
-    if (threadNeedsFollowup(thread))
+    if (detailNeedsFollowup(threadId, thread))
       scheduleDetailPoll(threadId, true);
     else
       syncJobs();
@@ -309,6 +318,96 @@ function submitReply(payload) {
     log("Reply failed", error);
     sendError(humanError(error));
   });
+}
+
+function runDetailRequest(label, threadId, callback) {
+  var settings = loadSettings();
+
+  if (!settings.wsUrl)
+    return Promise.reject(new Error("Set server URL"));
+
+  log(label + " starting", settings.wsUrl);
+  return ensureDetailClient(threadId).then(function(client) {
+    return callback(client);
+  });
+}
+
+function ensureDetailClient(threadId) {
+  var settings = loadSettings();
+  var client;
+
+  if (!settings.wsUrl)
+    return Promise.reject(new Error("Set server URL"));
+
+  if (detailClient && detailClientThreadId === threadId && isClientOpen(detailClient))
+    return Promise.resolve(detailClient);
+
+  if (detailClientReady && detailClientThreadId === threadId)
+    return detailClientReady;
+
+  closeDetailClient();
+  detailClientThreadId = threadId;
+  detailClient = new JsonRpcClient(settings.wsUrl);
+  detailClient.onNotification = handleCodexNotification;
+  client = detailClient;
+
+  log("Live detail connecting", settings.wsUrl);
+  detailClientReady = client.connect()
+    .then(function() {
+      return client.request("thread/resume", {
+        threadId: threadId
+      });
+    })
+    .then(function(result) {
+      var thread = result.thread || result;
+      detailClientReady = null;
+      if (thread && (thread.id || thread.turns))
+        sendDetailUpdate(threadId, thread);
+      return client;
+    }, function(error) {
+      if (detailClient === client) {
+        detailClient = null;
+        detailClientThreadId = "";
+        detailClientReady = null;
+      }
+      client.close();
+      throw error;
+    });
+
+  return detailClientReady;
+}
+
+function closeDetailClient() {
+  var client = detailClient;
+  var threadId = detailClientThreadId;
+
+  detailClient = null;
+  detailClientThreadId = "";
+  detailClientReady = null;
+
+  if (!client)
+    return;
+
+  client.onNotification = null;
+  try {
+    if (threadId && isClientOpen(client)) {
+      client.request("thread/unsubscribe", {
+        threadId: threadId
+      }).then(function() {
+        client.close();
+      }, function() {
+        client.close();
+      });
+    } else {
+      client.close();
+    }
+  } catch (_) {
+    client.close();
+  }
+}
+
+function isClientOpen(client) {
+  return Boolean(client && client.ws && client.ws.readyState === 1);
 }
 
 function runCodexRequest(label, callback) {
@@ -332,28 +431,32 @@ function runCodexRequest(label, callback) {
 }
 
 function sendDetailUpdate(threadId, thread) {
-  var body = threadBody(thread);
-  lastDetailBodyByThreadId[threadId] = body;
+  sendDetailBody(threadId, detailBody(threadId, thread), SyncState.synced);
+  reconcilePendingReply(threadId, thread);
+}
+
+function sendPendingReplyUpdate(threadId, text) {
+  sendDetailBody(threadId, pendingReplyBody(text, "Codex: working..."), SyncState.syncing);
+}
+
+function sendDetailBody(threadId, body, syncState) {
+  var formattedBody = sanitizeDetailBody(body, ProtocolByteLimit.body);
+  lastDetailBodyByThreadId[threadId] = formattedBody;
   sendEnvelope(
     MessageType.detailUpdate,
-    truncateUtf8([sanitizeField(threadId, ProtocolByteLimit.threadId), sanitizeBody(body, ProtocolByteLimit.body)].join("|"), ProtocolByteLimit.payload),
+    truncateUtf8([sanitizeField(threadId, ProtocolByteLimit.threadId), formattedBody].join("|"), ProtocolByteLimit.payload),
     0,
-    SyncState.synced
+    syncState
   );
 }
 
 function sendDetailUpdateIfChanged(threadId, thread) {
-  var body = threadBody(thread);
+  var body = detailBody(threadId, thread);
+  reconcilePendingReply(threadId, thread);
   if (lastDetailBodyByThreadId[threadId] === body)
     return false;
 
-  lastDetailBodyByThreadId[threadId] = body;
-  sendEnvelope(
-    MessageType.detailUpdate,
-    truncateUtf8([sanitizeField(threadId, ProtocolByteLimit.threadId), sanitizeBody(body, ProtocolByteLimit.body)].join("|"), ProtocolByteLimit.payload),
-    0,
-    SyncState.synced
-  );
+  sendDetailBody(threadId, body, SyncState.synced);
   return true;
 }
 
@@ -361,6 +464,7 @@ function setActiveDetailThread(threadId) {
   if (activeDetailThreadId === threadId)
     return;
 
+  closeDetailClient();
   activeDetailThreadId = threadId;
   detailPollAttempts = 0;
   detailPollInFlight = false;
@@ -403,7 +507,7 @@ function pollThreadDetail(threadId) {
 
   detailPollAttempts += 1;
   detailPollInFlight = true;
-  runCodexRequest("Thread detail poll", function(client) {
+  runDetailRequest("Thread detail poll", threadId, function(client) {
     return client.request("thread/read", {
       threadId: threadId,
       includeTurns: true
@@ -416,7 +520,7 @@ function pollThreadDetail(threadId) {
       return;
 
     sendDetailUpdateIfChanged(threadId, thread);
-    if (threadNeedsFollowup(thread))
+    if (detailNeedsFollowup(threadId, thread))
       scheduleDetailPoll(threadId, false);
     else
       syncJobs();
@@ -433,6 +537,348 @@ function pollThreadDetail(threadId) {
 function threadNeedsFollowup(thread) {
   var status = threadStatusText(thread);
   return status === "active" || status === "running" || Boolean(latestInProgressTurn(thread));
+}
+
+function detailNeedsFollowup(threadId, thread) {
+  return threadNeedsFollowup(thread) || Boolean(pendingReplyTextByThreadId[threadId]);
+}
+
+function handleCodexNotification(method, params) {
+  var threadId = notificationThreadId(params);
+  var line;
+
+  if (!threadId || threadId !== activeDetailThreadId)
+    return;
+
+  log("Live notification", method);
+  if (method === "turn/started") {
+    sendLiveProgress(threadId, "Codex: working...");
+  } else if (method === "turn/plan/updated") {
+    line = planNotificationSummary(params);
+    if (line)
+      sendLiveProgress(threadId, line);
+  } else if (method === "item/started") {
+    line = itemStartedSummary(params.item);
+    if (line)
+      sendLiveProgress(threadId, line);
+  } else if (method === "item/agentMessage/delta") {
+    handleAgentMessageDelta(params);
+  } else if (method === "item/completed") {
+    handleItemCompleted(params);
+  } else if (method === "turn/completed") {
+    handleTurnCompleted(params);
+  } else if (method === "thread/status/changed") {
+    if (params && params.status)
+      sendLiveProgress(threadId, "Codex: " + threadStatusText({ status: params.status }));
+  }
+}
+
+function notificationThreadId(params) {
+  if (!params)
+    return "";
+  if (params.threadId)
+    return sanitizeField(params.threadId, ProtocolByteLimit.threadId);
+  if (params.thread && params.thread.id)
+    return sanitizeField(params.thread.id, ProtocolByteLimit.threadId);
+  return "";
+}
+
+function handleAgentMessageDelta(params) {
+  var threadId = notificationThreadId(params);
+  var key;
+  var text;
+
+  if (!threadId || !params || !params.itemId)
+    return;
+
+  key = [threadId, params.turnId || "", params.itemId].join("|");
+  text = (liveAgentTextByKey[key] || "") + String(params.delta || "");
+  liveAgentTextByKey[key] = text;
+  if (text)
+    sendLiveProgress(threadId, "Codex: " + text);
+}
+
+function handleItemCompleted(params) {
+  var threadId = notificationThreadId(params);
+  var item = params && params.item;
+  var summary = threadItemSummary(item);
+  var body;
+  var key;
+
+  if (!threadId || !summary)
+    return;
+
+  if (item && item.id) {
+    key = [threadId, params.turnId || "", item.id].join("|");
+    delete liveAgentTextByKey[key];
+  }
+
+  body = clearLiveProgress(threadId);
+  if (bodyContainsLine(body, summary))
+    return;
+
+  if (pendingReplyTextByThreadId[threadId] && item && item.type !== "userMessage") {
+    sendDetailBody(threadId, pendingReplyBody(pendingReplyTextByThreadId[threadId], summary), SyncState.syncing);
+    return;
+  }
+
+  sendDetailBody(threadId, appendWithReservedSuffix(body, summary), SyncState.syncing);
+}
+
+function handleTurnCompleted(params) {
+  var threadId = notificationThreadId(params);
+
+  if (!threadId)
+    return;
+
+  clearLiveProgress(threadId);
+  if (params && params.turn)
+    sendDetailUpdate(threadId, { id: threadId, turns: [params.turn] });
+
+  refreshDetailFromLiveClient(threadId)
+    .then(function(thread) {
+      if (threadId !== activeDetailThreadId)
+        return;
+      sendDetailUpdate(threadId, thread);
+      syncJobs();
+    })
+    .catch(function(error) {
+      log("Live completion refresh failed", error);
+      if (detailNeedsFollowup(threadId, {}))
+        scheduleDetailPoll(threadId, false);
+    });
+}
+
+function refreshDetailFromLiveClient(threadId) {
+  return ensureDetailClient(threadId).then(function(client) {
+    return client.request("thread/read", {
+      threadId: threadId,
+      includeTurns: true
+    });
+  }).then(function(result) {
+    return result.thread || result;
+  });
+}
+
+function sendLiveProgress(threadId, line) {
+  var body;
+
+  if (!threadId || !line)
+    return;
+
+  if (pendingReplyTextByThreadId[threadId]) {
+    liveProgressLineByThreadId[threadId] = line;
+    sendDetailBody(threadId, pendingReplyBody(pendingReplyTextByThreadId[threadId], line), SyncState.syncing);
+    return;
+  }
+
+  body = clearLiveProgress(threadId);
+  liveProgressLineByThreadId[threadId] = line;
+  sendDetailBody(threadId, appendWithReservedSuffix(body, line), SyncState.syncing);
+}
+
+function clearLiveProgress(threadId) {
+  var body = removeLiveProgressLine(lastDetailBodyByThreadId[threadId], threadId);
+
+  delete liveProgressLineByThreadId[threadId];
+  lastDetailBodyByThreadId[threadId] = body;
+  return body;
+}
+
+function removeLiveProgressLine(body, threadId) {
+  var line = liveProgressLineByThreadId[threadId];
+  var lines;
+  var normalized;
+  var index;
+  var kept = [];
+
+  body = String(body || "");
+  if (!line)
+    return body;
+
+  lines = body.split(/\n\n+/);
+  normalized = normalizeTextForMatch(line);
+  for (index = 0; index < lines.length; index += 1) {
+    if (normalizeTextForMatch(lines[index]) !== normalized)
+      kept.push(lines[index]);
+  }
+  return kept.join("\n\n");
+}
+
+function bodyContainsLine(body, line) {
+  return normalizeTextForMatch(body).indexOf(normalizeTextForMatch(line)) !== -1;
+}
+
+function itemStartedSummary(item) {
+  if (!item || !item.type)
+    return "Codex: working...";
+  if (item.type === "agentMessage")
+    return "Codex: writing...";
+  if (item.type === "commandExecution")
+    return "$ " + item.command + " (running)";
+  if (item.type === "dynamicToolCall")
+    return "Tool: " + (item.namespace ? item.namespace + "/" : "") + item.tool + " (running)";
+  if (item.type === "mcpToolCall")
+    return "Tool: " + item.server + "/" + item.tool + " (running)";
+  if (item.type === "plan")
+    return item.text ? "Plan: " + item.text : "Plan updated";
+  return "Codex: working...";
+}
+
+function planNotificationSummary(params) {
+  var plan = params && Array.isArray(params.plan) ? params.plan : [];
+  var index;
+  var step;
+
+  for (index = plan.length - 1; index >= 0; index -= 1) {
+    step = plan[index];
+    if (step && step.step)
+      return "Plan: " + step.step;
+  }
+  if (params && params.explanation)
+    return "Plan: " + params.explanation;
+  return "Plan updated";
+}
+
+function detailBody(threadId, thread) {
+  var body = threadBody(thread);
+  var pendingText = pendingReplyTextByThreadId[threadId];
+
+  if (pendingText) {
+    if (!threadContainsUserText(thread, pendingText))
+      body = pendingReplyBody(pendingText, "Codex: working...");
+    else if (!threadHasReplyResult(thread, pendingText) && !bodyContainsWorkingIndicator(body))
+      body = appendWithReservedSuffix(body, "Codex: working...");
+  } else if (threadNeedsFollowup(thread) && !bodyContainsWorkingIndicator(body)) {
+    body = appendWithReservedSuffix(body, "Codex: working...");
+  }
+
+  return body;
+}
+
+function pendingReplyBody(text, progressLine) {
+  var userLine = "You: " + String(text || "").trim();
+  var progress = String(progressLine || "").trim();
+
+  if (!progress)
+    return userLine;
+  return joinPreservingPrefix(userLine, progress, ProtocolByteLimit.body);
+}
+
+function appendWithReservedSuffix(body, suffix) {
+  var base = String(body || "").trim();
+  var addition = String(suffix || "").trim();
+  var maxBaseBytes;
+
+  if (!addition)
+    return base;
+  if (!base || base === "No loaded messages yet")
+    return addition;
+
+  maxBaseBytes = ProtocolByteLimit.body - utf8ByteLength(addition) - 2;
+  if (maxBaseBytes <= 0)
+    return addition;
+
+  return truncateUtf8(base, maxBaseBytes).trim() + "\n\n" + addition;
+}
+
+function joinPreservingPrefix(prefix, suffix, maxBytes) {
+  var head = String(prefix || "").trim();
+  var tail = String(suffix || "").trim();
+  var separator = "\n\n";
+  var tailMaxBytes;
+
+  if (!head)
+    return truncateUtf8(tail, maxBytes);
+  if (!tail)
+    return truncateUtf8(head, maxBytes);
+
+  tailMaxBytes = maxBytes - utf8ByteLength(head) - utf8ByteLength(separator);
+  if (tailMaxBytes <= 0)
+    return truncateUtf8(head, maxBytes);
+  return head + separator + truncateUtf8(tail, tailMaxBytes);
+}
+
+function reconcilePendingReply(threadId, thread) {
+  var pendingText = pendingReplyTextByThreadId[threadId];
+  if (pendingText && threadHasReplyResult(thread, pendingText))
+    delete pendingReplyTextByThreadId[threadId];
+}
+
+function threadHasReplyResult(thread, text) {
+  var target = normalizeTextForMatch(text);
+  var turns = thread && Array.isArray(thread.turns) ? thread.turns : [];
+  var turnIndex;
+  var itemIndex;
+  var turn;
+  var item;
+  var itemText;
+  var foundUser;
+  var foundVisibleActivity;
+
+  if (!target)
+    return false;
+
+  for (turnIndex = 0; turnIndex < turns.length; turnIndex += 1) {
+    turn = turns[turnIndex] || {};
+    if (!Array.isArray(turn.items))
+      continue;
+
+    foundUser = false;
+    foundVisibleActivity = false;
+    for (itemIndex = 0; itemIndex < turn.items.length; itemIndex += 1) {
+      item = turn.items[itemIndex];
+      if (!item)
+        continue;
+
+      if (!foundUser && item.type === "userMessage") {
+        itemText = normalizeTextForMatch(userInputText(item.content));
+        foundUser = itemText === target || itemText.indexOf(target) !== -1;
+      } else if (foundUser && item.type !== "userMessage" && threadItemSummary(item)) {
+        foundVisibleActivity = true;
+      }
+    }
+
+    if (foundUser && (foundVisibleActivity || turn.status === "completed" || turn.status === "failed" || turn.status === "canceled"))
+      return true;
+  }
+
+  return false;
+}
+
+function threadContainsUserText(thread, text) {
+  var target = normalizeTextForMatch(text);
+  var turns = thread && Array.isArray(thread.turns) ? thread.turns : [];
+  var turnIndex;
+  var itemIndex;
+  var item;
+  var itemText;
+
+  if (!target)
+    return false;
+
+  for (turnIndex = 0; turnIndex < turns.length; turnIndex += 1) {
+    if (!Array.isArray(turns[turnIndex].items))
+      continue;
+    for (itemIndex = 0; itemIndex < turns[turnIndex].items.length; itemIndex += 1) {
+      item = turns[turnIndex].items[itemIndex];
+      if (!item || item.type !== "userMessage")
+        continue;
+      itemText = normalizeTextForMatch(userInputText(item.content));
+      if (itemText === target || itemText.indexOf(target) !== -1)
+        return true;
+    }
+  }
+
+  return false;
+}
+
+function bodyContainsWorkingIndicator(body) {
+  return normalizeTextForMatch(body).indexOf("codex: working") !== -1;
+}
+
+function normalizeTextForMatch(value) {
+  return String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 function threadBody(thread) {
@@ -616,16 +1062,53 @@ function sanitizeField(value, maxBytes) {
   );
 }
 
-function sanitizeBody(value, maxBytes) {
-  return truncateUtf8(
-    String(value == null ? "" : value)
-      .replace(/\|/g, "/")
-      .replace(/\r\n/g, "\n")
-      .replace(/\r/g, "\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim(),
-    maxBytes
-  );
+function sanitizeDetailBody(value, maxBytes) {
+  var text = String(value == null ? "" : value)
+    .replace(/\|/g, "/")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  if (utf8ByteLength(text) <= maxBytes)
+    return text;
+  return fitRecentDetailBody(text, maxBytes);
+}
+
+function fitRecentDetailBody(text, maxBytes) {
+  var sections = String(text || "").split(/\n\n+/);
+  var selected = [];
+  var candidate;
+  var index;
+
+  if (!sections.length)
+    return truncateUtf8(text, maxBytes);
+
+  if (/^you:/i.test(sections[0]) && sections.length > 1 && !hasLaterUserSection(sections))
+    return joinPreservingPrefix(sections[0], sections.slice(1).join("\n\n"), maxBytes);
+
+  for (index = sections.length - 1; index >= 0; index -= 1) {
+    candidate = [sections[index]].concat(selected).join("\n\n");
+    if (utf8ByteLength(candidate) <= maxBytes) {
+      selected.unshift(sections[index]);
+    } else if (!selected.length) {
+      return truncateUtf8(sections[index], maxBytes);
+    } else {
+      break;
+    }
+  }
+
+  return selected.join("\n\n");
+}
+
+function hasLaterUserSection(sections) {
+  var index;
+
+  for (index = 1; index < sections.length; index += 1) {
+    if (/^you:/i.test(sections[index]))
+      return true;
+  }
+  return false;
 }
 
 function splitPayload(payload) {
@@ -634,6 +1117,38 @@ function splitPayload(payload) {
   if (separator === -1)
     return [text, ""];
   return [text.slice(0, separator), text.slice(separator + 1)];
+}
+
+function utf8ByteLength(value) {
+  var text = String(value == null ? "" : value);
+  var length = 0;
+  var index;
+  var code;
+  var next;
+  var codeUnitLength;
+
+  for (index = 0; index < text.length; index += codeUnitLength) {
+    code = text.charCodeAt(index);
+    codeUnitLength = 1;
+
+    if (code <= 0x7F) {
+      length += 1;
+    } else if (code <= 0x7FF) {
+      length += 2;
+    } else if (code >= 0xD800 && code <= 0xDBFF && index + 1 < text.length) {
+      next = text.charCodeAt(index + 1);
+      if (next >= 0xDC00 && next <= 0xDFFF) {
+        codeUnitLength = 2;
+        length += 4;
+      } else {
+        length += 3;
+      }
+    } else {
+      length += 3;
+    }
+  }
+
+  return length;
 }
 
 function truncateUtf8(value, maxBytes) {
@@ -723,6 +1238,7 @@ function JsonRpcClient(url) {
   this.nextId = 1;
   this.pending = {};
   this.closed = false;
+  this.onNotification = null;
 }
 
 JsonRpcClient.prototype.connect = function() {
@@ -825,8 +1341,16 @@ JsonRpcClient.prototype.handleMessage = function(raw) {
 
   log("JSON-RPC receive", message.method || ("id=" + message.id) || "notification");
 
-  if (message.id === undefined)
+  if (message.id === undefined) {
+    if (message.method && this.onNotification) {
+      try {
+        this.onNotification(message.method, message.params || {});
+      } catch (error) {
+        log("Notification handler failed", error);
+      }
+    }
     return;
+  }
 
   pending = this.pending[message.id];
   if (!pending)
