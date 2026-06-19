@@ -17,6 +17,9 @@
 #define CODEX_DETAIL_TEXT_PADDING 4
 #define CODEX_READY_INITIAL_DELAY_MS 300
 #define CODEX_READY_RETRY_DELAY_MS 1000
+#define CODEX_MENU_ROW_HEIGHT 44
+#define CODEX_TOUCH_TAP_MAX_PX 15
+#define CODEX_TOUCH_SWIPE_MIN_PX 40
 
 #define CODEX_MSG_APP_READY "app_ready"
 #define CODEX_MSG_REFRESH "refresh"
@@ -69,6 +72,12 @@ static bool s_has_settings;
 static bool s_received_state;
 static CodexSyncState s_sync_state = CodexSyncDesynced;
 static char s_status[CODEX_STATUS_LENGTH] = "Starting";
+static bool s_touch_subscribed;
+static bool s_touch_down;
+static bool s_touch_dragged;
+static int s_touch_down_x;
+static int s_touch_down_y;
+static int s_touch_last_y;
 
 static void prv_send_message(const char *type, const char *payload);
 static void prv_reload_menu(void);
@@ -79,6 +88,7 @@ static void prv_update_detail_layers(void);
 static void prv_update_detail_scroll(bool scroll_to_bottom);
 static void prv_detail_click_config_provider(void *context);
 static void prv_schedule_ready_timer(uint32_t delay_ms);
+static void prv_touch_handler(const TouchEvent *event, void *context);
 
 static void prv_copy_string(char *dest, size_t dest_size, const char *src) {
   if (!dest || dest_size == 0) {
@@ -110,6 +120,10 @@ static const char *prv_next_field(char **cursor) {
 
 static bool prv_string_is_truthy(const char *value) {
   return value && value[0] == '1';
+}
+
+static int prv_iabs(int value) {
+  return value < 0 ? -value : value;
 }
 
 static void prv_copy_payload_field(char *dest, size_t dest_size, const char *src) {
@@ -345,6 +359,14 @@ static int16_t prv_get_header_height(MenuLayer *menu_layer, uint16_t section_ind
   return 0;
 }
 
+static int16_t prv_get_cell_height(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
+  (void)menu_layer;
+  (void)cell_index;
+  (void)context;
+
+  return CODEX_MENU_ROW_HEIGHT;
+}
+
 static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *context) {
   if (!s_has_settings) {
     if (!s_received_state) {
@@ -387,7 +409,7 @@ static void prv_update_detail_layers(void) {
   prv_update_detail_scroll(scroll_to_bottom);
   if (s_detail_footer_layer) {
 #if defined(PBL_MICROPHONE)
-    text_layer_set_text(s_detail_footer_layer, job ? "Select: reply" : "");
+    text_layer_set_text(s_detail_footer_layer, job ? "Tap/Select: reply" : "");
 #else
     text_layer_set_text(s_detail_footer_layer, "Reply unavailable");
 #endif
@@ -433,6 +455,37 @@ static void prv_update_detail_scroll(bool scroll_to_bottom) {
     }
     scroll_layer_set_content_offset(s_detail_scroll_layer, GPoint(0, -bottom_offset), false);
   }
+}
+
+static void prv_scroll_detail_by(int dy) {
+  Layer *scroll_layer;
+  GRect bounds;
+  GSize content_size;
+  GPoint offset;
+  int min_y;
+  int next_y;
+
+  if (!s_detail_scroll_layer) {
+    return;
+  }
+
+  scroll_layer = scroll_layer_get_layer(s_detail_scroll_layer);
+  bounds = layer_get_bounds(scroll_layer);
+  content_size = scroll_layer_get_content_size(s_detail_scroll_layer);
+  min_y = bounds.size.h - content_size.h;
+  if (min_y > 0) {
+    min_y = 0;
+  }
+
+  offset = scroll_layer_get_content_offset(s_detail_scroll_layer);
+  next_y = offset.y + dy;
+  if (next_y > 0) {
+    next_y = 0;
+  } else if (next_y < min_y) {
+    next_y = min_y;
+  }
+
+  scroll_layer_set_content_offset(s_detail_scroll_layer, GPoint(0, next_y), false);
 }
 
 static void prv_detail_window_load(Window *window) {
@@ -551,6 +604,19 @@ static void prv_detail_click_config_provider(void *context) {
   window_single_click_subscribe(BUTTON_ID_SELECT, prv_detail_select_handler);
 }
 
+static bool prv_point_in_layer(Layer *layer, int x, int y) {
+  GRect frame;
+  GPoint point;
+
+  if (!layer) {
+    return false;
+  }
+
+  frame = layer_get_frame(layer);
+  point = GPoint(x, y);
+  return grect_contains_point(&frame, &point);
+}
+
 static void prv_select_click(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
   if (!s_has_settings) {
     if (!s_received_state) {
@@ -587,6 +653,150 @@ static void prv_select_click(MenuLayer *menu_layer, MenuIndex *cell_index, void 
   prv_request_selected_detail();
 }
 
+static bool prv_menu_index_from_touch(int x, int y, MenuIndex *index) {
+  Layer *menu_layer_root;
+  ScrollLayer *menu_scroll_layer;
+  GRect menu_frame;
+  GPoint offset;
+  int content_y;
+  int row;
+  uint16_t row_count;
+
+  if (!s_menu_layer || !index) {
+    return false;
+  }
+
+  menu_layer_root = menu_layer_get_layer(s_menu_layer);
+  menu_frame = layer_get_frame(menu_layer_root);
+  if (!grect_contains_point(&menu_frame, &(GPoint){x, y})) {
+    return false;
+  }
+
+  menu_scroll_layer = menu_layer_get_scroll_layer(s_menu_layer);
+  offset = scroll_layer_get_content_offset(menu_scroll_layer);
+  content_y = y - menu_frame.origin.y - offset.y;
+  if (content_y < 0) {
+    return false;
+  }
+
+  row = content_y / CODEX_MENU_ROW_HEIGHT;
+  row_count = prv_get_num_rows(s_menu_layer, 0, NULL);
+  if (row < 0 || row >= row_count) {
+    return false;
+  }
+
+  index->section = 0;
+  index->row = (uint16_t)row;
+  return true;
+}
+
+static void prv_handle_main_touch_tap(int x, int y) {
+  MenuIndex index;
+
+  if (!prv_menu_index_from_touch(x, y, &index)) {
+    return;
+  }
+
+  menu_layer_set_selected_index(s_menu_layer, index, MenuRowAlignCenter, false);
+  prv_select_click(s_menu_layer, &index, NULL);
+}
+
+static void prv_handle_detail_touch_tap(int x, int y) {
+  if (s_detail_footer_layer && prv_point_in_layer(text_layer_get_layer(s_detail_footer_layer), x, y)) {
+    prv_detail_select_handler(NULL, NULL);
+  }
+}
+
+static void prv_touch_handler(const TouchEvent *event, void *context) {
+  int dx;
+  int dy;
+  bool detail_active;
+
+  (void)context;
+
+  if (!event) {
+    return;
+  }
+
+  detail_active = s_detail_scroll_layer != NULL;
+
+  switch (event->type) {
+    case TouchEvent_Touchdown:
+      s_touch_down = true;
+      s_touch_dragged = false;
+      s_touch_down_x = event->x;
+      s_touch_down_y = event->y;
+      s_touch_last_y = event->y;
+      break;
+
+    case TouchEvent_PositionUpdate:
+      if (!s_touch_down) {
+        break;
+      }
+      if (prv_iabs(event->x - s_touch_down_x) > CODEX_TOUCH_TAP_MAX_PX ||
+          prv_iabs(event->y - s_touch_down_y) > CODEX_TOUCH_TAP_MAX_PX) {
+        s_touch_dragged = true;
+      }
+      if (detail_active) {
+        dy = event->y - s_touch_last_y;
+        if (dy != 0) {
+          prv_scroll_detail_by(dy);
+        }
+      }
+      s_touch_last_y = event->y;
+      break;
+
+    case TouchEvent_Liftoff:
+      if (!s_touch_down) {
+        break;
+      }
+      s_touch_down = false;
+      dx = event->x - s_touch_down_x;
+      dy = event->y - s_touch_down_y;
+
+      if (detail_active) {
+        if (prv_iabs(dx) > CODEX_TOUCH_SWIPE_MIN_PX && prv_iabs(dx) > prv_iabs(dy) && dx > 0) {
+          window_stack_pop(true);
+        } else if (prv_iabs(dx) < CODEX_TOUCH_TAP_MAX_PX && prv_iabs(dy) < CODEX_TOUCH_TAP_MAX_PX) {
+          prv_handle_detail_touch_tap(s_touch_down_x, s_touch_down_y);
+        } else if (!s_touch_dragged && prv_iabs(dy) > CODEX_TOUCH_SWIPE_MIN_PX) {
+          prv_scroll_detail_by(dy);
+        }
+        break;
+      }
+
+      if (prv_iabs(dy) > CODEX_TOUCH_SWIPE_MIN_PX && prv_iabs(dy) > prv_iabs(dx) && s_menu_layer) {
+        menu_layer_set_selected_next(s_menu_layer, dy > 0, MenuRowAlignCenter, true);
+      } else if (prv_iabs(dx) < CODEX_TOUCH_TAP_MAX_PX && prv_iabs(dy) < CODEX_TOUCH_TAP_MAX_PX) {
+        prv_handle_main_touch_tap(s_touch_down_x, s_touch_down_y);
+      }
+      break;
+
+    default:
+      break;
+  }
+}
+
+static void prv_subscribe_touch(void) {
+  if (s_touch_subscribed) {
+    return;
+  }
+
+  touch_service_subscribe(prv_touch_handler, NULL);
+  s_touch_subscribed = true;
+}
+
+static void prv_unsubscribe_touch(void) {
+  if (!s_touch_subscribed) {
+    return;
+  }
+
+  touch_service_unsubscribe();
+  s_touch_subscribed = false;
+  s_touch_down = false;
+  s_touch_dragged = false;
+}
+
 static void prv_reload_menu(void) {
   if (s_status_layer) {
     text_layer_set_text(s_status_layer, s_status);
@@ -606,6 +816,7 @@ static void prv_main_window_load(Window *window) {
   menu_layer_set_callbacks(s_menu_layer, NULL, (MenuLayerCallbacks){
     .get_num_sections = prv_get_num_sections,
     .get_num_rows = prv_get_num_rows,
+    .get_cell_height = prv_get_cell_height,
     .get_header_height = prv_get_header_height,
     .draw_row = prv_draw_row,
     .select_click = prv_select_click,
@@ -618,9 +829,12 @@ static void prv_main_window_load(Window *window) {
   text_layer_set_text_alignment(s_status_layer, GTextAlignmentCenter);
   text_layer_set_text(s_status_layer, s_status);
   layer_add_child(root, text_layer_get_layer(s_status_layer));
+
+  prv_subscribe_touch();
 }
 
 static void prv_main_window_unload(Window *window) {
+  prv_unsubscribe_touch();
   menu_layer_destroy(s_menu_layer);
   text_layer_destroy(s_status_layer);
   s_menu_layer = NULL;
