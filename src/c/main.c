@@ -22,6 +22,7 @@
 #define CODEX_MENU_ROW_HEIGHT 44
 #define CODEX_TOUCH_TAP_MAX_PX 15
 #define CODEX_TOUCH_SWIPE_MIN_PX 40
+#define CODEX_SPINNER_INTERVAL_MS 650
 
 #define CODEX_MSG_APP_READY "app_ready"
 #define CODEX_MSG_REFRESH "refresh"
@@ -86,6 +87,7 @@ static TextLayer *s_status_layer;
 static TextLayer *s_detail_body_layer;
 static TextLayer *s_detail_footer_layer;
 static AppTimer *s_ready_timer;
+static AppTimer *s_spinner_timer;
 #if defined(PBL_MICROPHONE)
 static DictationSession *s_dictation_session;
 #endif
@@ -106,6 +108,7 @@ static bool s_has_settings;
 static bool s_received_state;
 static CodexSyncState s_sync_state = CodexSyncDesynced;
 static char s_status[CODEX_STATUS_LENGTH] = "Starting";
+static uint8_t s_spinner_frame;
 static bool s_touch_subscribed;
 static bool s_touch_down;
 static bool s_touch_dragged;
@@ -117,6 +120,8 @@ static int s_touch_last_y;
 
 static bool prv_send_message(const char *type, const char *payload);
 static void prv_reload_menu(void);
+static void prv_update_spinner_timer(void);
+static void prv_update_status_layer(void);
 static void prv_copy_string(char *dest, size_t dest_size, const char *src);
 static CodexJob *prv_find_job_by_id(const char *id);
 static CodexJob *prv_get_selected_job(void);
@@ -128,6 +133,8 @@ static void prv_touch_handler(const TouchEvent *event, void *context);
 static bool prv_is_detail_anchor(const char *value);
 static bool prv_job_is_working_kind(const char *kind);
 static bool prv_job_needs_attention_kind(const char *kind);
+static char prv_spinner_char(void);
+static bool prv_has_activity(void);
 static void prv_format_job_title(CodexJob *job, char *dest, size_t dest_size);
 static void prv_prepare_detail_load(CodexJob *job);
 static void prv_clear_reply_state(const char *thread_id);
@@ -177,23 +184,41 @@ static bool prv_job_needs_attention_kind(const char *kind) {
                   strcmp(kind, "error") == 0 || strcmp(kind, "systemError") == 0);
 }
 
-static void prv_format_job_title(CodexJob *job, char *dest, size_t dest_size) {
-  const char *prefix = "";
+static char prv_spinner_char(void) {
+  static const char frames[] = "|/-\\";
+  return frames[s_spinner_frame % (sizeof(frames) - 1)];
+}
 
+static bool prv_has_activity(void) {
+  size_t index;
+
+  if (s_sync_state == CodexSyncSyncing || s_reply_in_flight) {
+    return true;
+  }
+
+  for (index = 0; index < s_job_count; index += 1) {
+    if (prv_job_is_working_kind(s_jobs[index].kind) || s_jobs[index].loading_detail || s_jobs[index].detail_page_pending) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static void prv_format_job_title(CodexJob *job, char *dest, size_t dest_size) {
   if (!job) {
     prv_copy_string(dest, dest_size, "");
     return;
   }
 
   if (prv_job_needs_attention_kind(job->kind)) {
-    prefix = "! ";
+    snprintf(dest, dest_size, "! %s", job->title);
   } else if (prv_job_is_working_kind(job->kind)) {
-    prefix = "* ";
+    snprintf(dest, dest_size, "%c %s", prv_spinner_char(), job->title);
   } else if (job->unread_done) {
-    prefix = ". ";
+    snprintf(dest, dest_size, ". %s", job->title);
+  } else {
+    prv_copy_string(dest, dest_size, job->title);
   }
-
-  snprintf(dest, dest_size, "%s%s", prefix, job->title);
 }
 
 static bool prv_is_detail_anchor(const char *value) {
@@ -261,6 +286,7 @@ static void prv_clear_reply_state(const char *thread_id) {
   s_reply_retry_available = false;
   s_last_reply_thread_id[0] = '\0';
   s_last_reply_text[0] = '\0';
+  prv_update_spinner_timer();
 }
 
 static void prv_mark_reply_retry_available(void) {
@@ -270,6 +296,7 @@ static void prv_mark_reply_retry_available(void) {
 
   s_reply_in_flight = false;
   s_reply_retry_available = true;
+  prv_update_spinner_timer();
   if (s_detail_footer_layer) {
     text_layer_set_text(s_detail_footer_layer, "Select: retry reply");
   }
@@ -393,8 +420,38 @@ static void prv_apply_detail_text(CodexJob *job, const char *body, CodexDetailMe
 static void prv_set_status(const char *status, CodexSyncState sync_state) {
   s_sync_state = sync_state;
   prv_copy_string(s_status, sizeof(s_status), status);
+  prv_update_status_layer();
+  prv_update_spinner_timer();
+}
+
+static void prv_update_status_layer(void) {
+  static char status_text[CODEX_STATUS_LENGTH + 4];
+
   if (s_status_layer) {
-    text_layer_set_text(s_status_layer, s_status);
+    if (s_sync_state == CodexSyncSyncing) {
+      snprintf(status_text, sizeof(status_text), "%c %s", prv_spinner_char(), s_status);
+      text_layer_set_text(s_status_layer, status_text);
+    } else {
+      text_layer_set_text(s_status_layer, s_status);
+    }
+  }
+}
+
+static void prv_spinner_timer_callback(void *context) {
+  (void)context;
+  s_spinner_timer = NULL;
+  s_spinner_frame = (uint8_t)((s_spinner_frame + 1) % 4);
+  prv_reload_menu();
+}
+
+static void prv_update_spinner_timer(void) {
+  bool should_spin = prv_has_activity();
+
+  if (should_spin && !s_spinner_timer) {
+    s_spinner_timer = app_timer_register(CODEX_SPINNER_INTERVAL_MS, prv_spinner_timer_callback, NULL);
+  } else if (!should_spin && s_spinner_timer) {
+    app_timer_cancel(s_spinner_timer);
+    s_spinner_timer = NULL;
   }
 }
 
@@ -912,6 +969,7 @@ static void prv_send_reply_text(const char *text) {
   prv_copy_string(s_last_reply_text, sizeof(s_last_reply_text), clean_text);
   s_reply_in_flight = true;
   s_reply_retry_available = false;
+  prv_update_spinner_timer();
   snprintf(payload, sizeof(payload), "%s|%s", thread_id, clean_text);
   if (s_detail_footer_layer) {
     text_layer_set_text(s_detail_footer_layer, "Sending...");
@@ -934,6 +992,7 @@ static bool prv_retry_reply(void) {
   snprintf(payload, sizeof(payload), "%s|%s", s_last_reply_thread_id, s_last_reply_text);
   s_reply_in_flight = true;
   s_reply_retry_available = false;
+  prv_update_spinner_timer();
   if (s_detail_footer_layer) {
     text_layer_set_text(s_detail_footer_layer, "Retrying...");
   }
@@ -1199,12 +1258,11 @@ static void prv_unsubscribe_touch(void) {
 }
 
 static void prv_reload_menu(void) {
-  if (s_status_layer) {
-    text_layer_set_text(s_status_layer, s_status);
-  }
+  prv_update_status_layer();
   if (s_menu_layer) {
     menu_layer_reload_data(s_menu_layer);
   }
+  prv_update_spinner_timer();
 }
 
 static void prv_main_window_load(Window *window) {
@@ -1269,6 +1327,10 @@ static void prv_deinit(void) {
   if (s_ready_timer) {
     app_timer_cancel(s_ready_timer);
     s_ready_timer = NULL;
+  }
+  if (s_spinner_timer) {
+    app_timer_cancel(s_spinner_timer);
+    s_spinner_timer = NULL;
   }
   if (s_detail_window) {
     window_destroy(s_detail_window);
