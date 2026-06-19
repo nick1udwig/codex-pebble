@@ -495,6 +495,7 @@ static void prv_detail_window_load(Window *window) {
   GRect body_frame = GRect(4, 4, bounds.size.w - 8, bounds.size.h - 28);
 
   s_detail_scroll_layer = scroll_layer_create(body_frame);
+  scroll_layer_set_shadow_hidden(s_detail_scroll_layer, true);
   scroll_layer_set_callbacks(s_detail_scroll_layer, (ScrollLayerCallbacks) {
     .click_config_provider = prv_detail_click_config_provider,
   });
