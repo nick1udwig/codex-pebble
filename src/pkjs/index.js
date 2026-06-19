@@ -64,6 +64,9 @@ var detailClient = null;
 var detailClientThreadId = "";
 var detailClientReady = null;
 var activeListLimit = 0;
+var listThreads = [];
+var listThreadIds = {};
+var listNextCursor = null;
 var activeDetailThreadId = "";
 var detailPollTimer = null;
 var detailPollAttempts = 0;
@@ -114,6 +117,7 @@ Pebble.addEventListener("webviewclosed", function(event) {
   try {
     saveSettings(JSON.parse(decoded));
     activeListLimit = 0;
+    resetListCache();
     closeDetailClient();
     sendSettingsState();
     syncJobs({ reset: true });
@@ -131,6 +135,8 @@ function openConfiguration() {
 function syncJobs(options) {
   options = options || {};
   var settings = loadSettings();
+  var requestLimit;
+  var requestCursor = null;
   if (!settings.wsUrl) {
     sendSettingsState();
     sendStatus("Set server URL", SyncState.desynced);
@@ -140,15 +146,22 @@ function syncJobs(options) {
   if (syncInFlight)
     return;
 
-  if (!activeListLimit || options.reset)
-    activeListLimit = settings.displayLimit;
-  if (options.loadMore)
-    activeListLimit = Math.min(MAX_WATCH_ROWS, activeListLimit + settings.displayLimit);
+  if (options.loadMore && (!listNextCursor || listThreads.length >= MAX_WATCH_ROWS)) {
+    sendJobs([], settings, { nextCursor: null, totalCount: listThreads.length, clear: false });
+    return;
+  }
+
+  if (options.loadMore) {
+    requestLimit = Math.min(settings.displayLimit, MAX_WATCH_ROWS - listThreads.length);
+  } else {
+    requestLimit = options.reset ? settings.displayLimit : Math.min(MAX_WATCH_ROWS, Math.max(settings.displayLimit, activeListLimit || listThreads.length));
+    resetListCache();
+    activeListLimit = requestLimit;
+  }
 
   syncInFlight = true;
   sendSettingsState();
   sendStatus(options.loadMore ? "Loading more" : "Syncing", SyncState.syncing);
-  sendEnvelope(MessageType.jobClear, "", 0, SyncState.syncing);
   log("Sync starting", settings.wsUrl);
 
   if (currentClient)
@@ -157,17 +170,28 @@ function syncJobs(options) {
   currentClient = new JsonRpcClient(settings.wsUrl);
   currentClient.connect()
     .then(function() {
-      return currentClient.request("thread/list", {
-        limit: activeListLimit,
+      var params = {
+        limit: requestLimit,
         sortKey: "updated_at",
         archived: false,
         sourceKinds: SOURCE_KINDS,
         useStateDbOnly: true
-      });
+      };
+      if (options.loadMore) {
+        requestCursor = listNextCursor;
+        params.cursor = requestCursor;
+      }
+      log("List request", (options.loadMore ? "next" : "first") + " limit=" + requestLimit + " cursor=" + (requestCursor || "none") + " cached=" + listThreads.length);
+      return currentClient.request("thread/list", params);
     })
     .then(function(result) {
       var threads = result.data || result.threads || [];
-      sendJobs(threads, settings, result);
+      var page = updateListCache(threads, result, options, requestCursor);
+      sendJobs(options.loadMore ? page.addedThreads : listThreads, settings, {
+        nextCursor: listNextCursor,
+        totalCount: listThreads.length,
+        clear: !options.loadMore
+      });
       currentClient.close();
       currentClient = null;
       syncInFlight = false;
@@ -182,12 +206,56 @@ function syncJobs(options) {
     });
 }
 
+function resetListCache() {
+  listThreads = [];
+  listThreadIds = {};
+  listNextCursor = null;
+}
+
+function updateListCache(threads, result, options, requestCursor) {
+  var addedThreads = [];
+  var duplicateCount = 0;
+  var index;
+  var thread;
+  var id;
+  var nextCursor = result && result.nextCursor ? result.nextCursor : null;
+
+  if (!options.loadMore)
+    resetListCache();
+
+  for (index = 0; index < threads.length && listThreads.length < MAX_WATCH_ROWS; index += 1) {
+    thread = threads[index];
+    id = String((thread && (thread.id || thread.sessionId)) || "");
+    if (!id || listThreadIds[id]) {
+      if (id)
+        duplicateCount += 1;
+      continue;
+    }
+    listThreadIds[id] = true;
+    listThreads.push(thread);
+    addedThreads.push(thread);
+  }
+
+  if (options.loadMore && addedThreads.length === 0 && nextCursor === requestCursor)
+    nextCursor = null;
+
+  listNextCursor = nextCursor;
+  activeListLimit = listThreads.length || activeListLimit;
+  log("List response", "returned=" + threads.length + " added=" + addedThreads.length + " dup=" + duplicateCount + " next=" + (listNextCursor || "none") + " ids=" + summarizeThreadIds(threads));
+  return {
+    addedThreads: addedThreads,
+    duplicateCount: duplicateCount
+  };
+}
+
 function sendJobs(threads, settings, result) {
-  var count = Math.min(threads.length, MAX_WATCH_ROWS);
+  var count = result && result.totalCount != null ? Math.min(result.totalCount, MAX_WATCH_ROWS) : Math.min(threads.length, MAX_WATCH_ROWS);
   var hasMore = Boolean(result && result.nextCursor && count < MAX_WATCH_ROWS);
   var index;
 
-  for (index = 0; index < count; index += 1)
+  if (!result || result.clear !== false)
+    sendEnvelope(MessageType.jobClear, "", 0, SyncState.syncing);
+  for (index = 0; index < threads.length && index < MAX_WATCH_ROWS; index += 1)
     sendJobItem(threads[index]);
 
   sendEnvelope(MessageType.jobComplete, [String(count), hasMore ? "1" : "0"].join("|"), 0, SyncState.synced);
@@ -211,9 +279,17 @@ function sendJobItem(thread) {
 function listDetail(thread) {
   var parts = [];
   var status = threadStatusText(thread);
-  var source = thread.source || "";
+  var source = sessionSourceText(thread.source);
   var cwd = basename(thread.cwd || "");
+  var timestamp = compactThreadTime(thread.updatedAt || thread.createdAt);
+  var shortId = shortThreadId(thread.id || thread.sessionId);
 
+  if (timestamp && shortId)
+    parts.push(timestamp + " " + shortId);
+  else if (timestamp)
+    parts.push(timestamp);
+  else if (shortId)
+    parts.push(shortId);
   if (status && status !== "notLoaded")
     parts.push(status);
   if (source)
@@ -230,6 +306,79 @@ function threadStatusText(thread) {
   if (typeof status === "string")
     return status;
   return status.type || "unknown";
+}
+
+function sessionSourceText(source) {
+  if (!source)
+    return "";
+  if (typeof source === "string")
+    return source;
+  if (source.custom)
+    return String(source.custom);
+  if (source.subAgent)
+    return subAgentSourceText(source.subAgent);
+  return "";
+}
+
+function subAgentSourceText(source) {
+  if (!source)
+    return "subAgent";
+  if (typeof source === "string")
+    return "subAgent:" + source;
+  if (source.thread_spawn)
+    return "subAgent:spawn";
+  if (source.other)
+    return "subAgent:" + source.other;
+  return "subAgent";
+}
+
+function compactThreadTime(value) {
+  var date = parseThreadDate(value);
+  if (!date)
+    return "";
+  return String(date.getMonth() + 1) + "/" + String(date.getDate()) + " " + pad2(date.getHours()) + ":" + pad2(date.getMinutes());
+}
+
+function parseThreadDate(value) {
+  var timestamp;
+  if (typeof value === "number") {
+    timestamp = value < 100000000000 ? value * 1000 : value;
+  } else if (typeof value === "string" && value) {
+    timestamp = Date.parse(value);
+  } else {
+    return null;
+  }
+  if (!isFinite(timestamp))
+    return null;
+  return new Date(timestamp);
+}
+
+function pad2(value) {
+  value = String(value);
+  return value.length < 2 ? "0" + value : value;
+}
+
+function shortThreadId(id) {
+  id = String(id || "");
+  if (!id)
+    return "";
+  if (id.length <= 8)
+    return "#" + id;
+  return "#" + id.slice(-4);
+}
+
+function summarizeThreadIds(threads) {
+  var ids = [];
+  var index;
+  var id;
+  for (index = 0; index < threads.length && index < 4; index += 1) {
+    id = String((threads[index] && (threads[index].id || threads[index].sessionId)) || "");
+    if (id)
+      ids.push(id.slice(-6));
+  }
+  if (threads.length > ids.length)
+    ids.push("+" + String(threads.length - ids.length));
+  return ids.join(",");
 }
 
 function basename(path) {

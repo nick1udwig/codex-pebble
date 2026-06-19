@@ -372,28 +372,50 @@ static void prv_handle_settings_state(const char *payload) {
 static void prv_handle_job_item(const char *payload) {
   char buffer[320];
   char *cursor = buffer;
+  char id[CODEX_ID_LENGTH];
+  char kind[16];
+  char title[CODEX_TITLE_LENGTH];
+  char detail[CODEX_DETAIL_LENGTH];
   CodexJob *job;
+  bool is_new_job = false;
 
-  if (s_job_count >= CODEX_MAX_JOBS) {
+  prv_copy_string(buffer, sizeof(buffer), payload);
+  prv_copy_string(id, sizeof(id), prv_next_field(&cursor));
+  prv_copy_string(kind, sizeof(kind), prv_next_field(&cursor));
+  prv_copy_string(title, sizeof(title), prv_next_field(&cursor));
+  prv_copy_string(detail, sizeof(detail), prv_next_field(&cursor));
+
+  if (!id[0]) {
     return;
   }
 
-  prv_copy_string(buffer, sizeof(buffer), payload);
-  job = &s_jobs[s_job_count++];
-  prv_copy_string(job->id, sizeof(job->id), prv_next_field(&cursor));
-  prv_copy_string(job->kind, sizeof(job->kind), prv_next_field(&cursor));
-  prv_copy_string(job->title, sizeof(job->title), prv_next_field(&cursor));
-  prv_copy_string(job->detail, sizeof(job->detail), prv_next_field(&cursor));
-  prv_copy_string(job->body, sizeof(job->body), job->detail);
-  job->has_detail = false;
-  job->loading_detail = false;
-  job->detail_has_prev = false;
-  job->detail_has_next = false;
-  job->detail_page_pending = false;
-  job->detail_pending_request = CodexDetailRequestNone;
-  job->detail_anchor = CodexDetailAnchorBottom;
+  job = prv_find_job_by_id(id);
+  if (!job) {
+    if (s_job_count >= CODEX_MAX_JOBS) {
+      return;
+    }
+    job = &s_jobs[s_job_count++];
+    is_new_job = true;
+  }
+
+  prv_copy_string(job->id, sizeof(job->id), id);
+  prv_copy_string(job->kind, sizeof(job->kind), kind);
+  prv_copy_string(job->title, sizeof(job->title), title);
+  prv_copy_string(job->detail, sizeof(job->detail), detail);
+  if (is_new_job || !job->has_detail) {
+    prv_copy_string(job->body, sizeof(job->body), job->detail);
+  }
+  if (is_new_job) {
+    job->has_detail = false;
+    job->loading_detail = false;
+    job->detail_has_prev = false;
+    job->detail_has_next = false;
+    job->detail_page_pending = false;
+    job->detail_pending_request = CodexDetailRequestNone;
+    job->detail_anchor = CodexDetailAnchorBottom;
+  }
   if (s_selected_job_id[0] && strcmp(job->id, s_selected_job_id) == 0) {
-    s_selected_job = (int)(s_job_count - 1);
+    s_selected_job = (int)(job - s_jobs);
   }
 }
 

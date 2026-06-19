@@ -85,9 +85,9 @@ describe("native C PKJS bridge", () => {
     });
 
     const row = harness.sentMessages.find(message => message[0] === "job_item");
-    expect(row[1]).toContain("thr_1|active|Fix deploy|active - cli - codex-pebble");
+    expect(row[1]).toContain("thr_1|active|Fix deploy|#thr_1 - active - cli - codex-pebble");
     const notLoadedRow = harness.sentMessages.find(message => String(message[1]).startsWith("thr_2|"));
-    expect(notLoadedRow[1]).toContain("thr_2|notLoaded|Review tests in detail|vscode - repo");
+    expect(notLoadedRow[1]).toContain("thr_2|notLoaded|Review tests in detail|#thr_2 - vscode - repo");
     expect(harness.sentMessages.at(-1)).toMatchObject({
       0: "job_complete",
       1: "2|1",
@@ -129,7 +129,69 @@ describe("native C PKJS bridge", () => {
     harness.webSockets.at(-1).open();
 
     await vi.waitFor(() => expect(lastMessageOfType(harness, "job_complete")?.[1]).toBe("3|0"));
-    expect(harness.webSockets.at(-1).sentJson.find(message => message.method === "thread/list").params.limit).toBe(4);
+    const listRequest = harness.webSockets.at(-1).sentJson.find(message => message.method === "thread/list");
+    expect(listRequest.params.limit).toBe(2);
+    expect(listRequest.params.cursor).toBe("cursor-2");
+    const rows = harness.sentMessages.filter(message => message[0] === "job_item").map(message => message[1]);
+    expect(rows.at(-3)).toContain("thr_1|");
+    expect(rows.at(-2)).toContain("thr_2|");
+    expect(rows.at(-1)).toContain("thr_3|");
+  });
+
+  it("keeps same-title app-server rows visually distinguishable", async () => {
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 3,
+        recentCompletionLookbackMinutes: 720,
+      }),
+    }, {
+      threads: [
+        {
+          id: "019edd42-bccd-7941-8a8e-591a55851111",
+          name: "Review the current code changes (staged, unstaged, and untracked files) and provide prioritized findings.",
+          preview: "",
+          status: { type: "idle" },
+          source: { subAgent: "review" },
+          cwd: "/tmp/pebble",
+          updatedAt: 1781829639,
+        },
+        {
+          id: "019edd24-1cbc-7fa3-aa88-9299040b2222",
+          name: "Review the current code changes (staged, unstaged, and untracked files) and provide prioritized findings.",
+          preview: "",
+          status: { type: "idle" },
+          source: { subAgent: "review" },
+          cwd: "/tmp/pebble",
+          updatedAt: 1781827507,
+        },
+        {
+          id: "019edce0-590e-7612-8ba0-566971793333",
+          name: "Review the current code changes (staged, unstaged, and untracked files) and provide prioritized findings.",
+          preview: "",
+          status: { type: "idle" },
+          source: { subAgent: "review" },
+          cwd: "/tmp/pebble",
+          updatedAt: 1781823026,
+        },
+      ],
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "app_ready" } });
+    harness.webSockets[0].open();
+
+    await vi.waitFor(() => expect(lastMessageOfType(harness, "job_complete")?.[1]).toBe("3|0"));
+    const details = harness.sentMessages
+      .filter(message => message[0] === "job_item")
+      .map(message => String(message[1]).split("|")[3]);
+
+    expect(details).toHaveLength(3);
+    expect(new Set(details).size).toBe(3);
+    expect(details.join("\n")).not.toContain("[object Object]");
+    expect(details[0]).toContain("#1111");
+    expect(details[1]).toContain("#2222");
+    expect(details[2]).toContain("#3333");
+    expect(details[0]).toContain("subAgent:review");
   });
 
   it("loads thread detail with thread/read and emits readable content", async () => {
@@ -609,12 +671,14 @@ function loadPkjs(initialStorage = {}, options = {}) {
         this.onmessage({ data: JSON.stringify({ id: message.id, result: { userAgent: "test" } }) });
       } else if (message.method === "thread/list") {
         const limit = message.params.limit ?? threads.length;
+        const start = message.params.cursor ? Number(String(message.params.cursor).replace("cursor-", "")) || 0 : 0;
+        const end = start + limit;
         this.onmessage({ data: JSON.stringify({
           id: message.id,
           result: {
-            data: threads.slice(0, limit),
-            nextCursor: limit < threads.length ? "next-page" : null,
-            backwardsCursor: "prev-page",
+            data: threads.slice(start, end),
+            nextCursor: end < threads.length ? "cursor-" + end : null,
+            backwardsCursor: start > 0 ? "cursor-" + start : null,
           },
         }) });
       } else if (message.method === "thread/resume") {
