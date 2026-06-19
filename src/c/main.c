@@ -491,7 +491,7 @@ static void prv_handle_detail_update(const char *payload) {
   job->detail_page_pending = false;
   job->detail_pending_request = CodexDetailRequestNone;
   if (s_detail_footer_layer) {
-    text_layer_set_text(s_detail_footer_layer, "Tap/Select: reply");
+    text_layer_set_text(s_detail_footer_layer, "Select: reply");
   }
 }
 
@@ -679,7 +679,7 @@ static void prv_update_detail_layers(void) {
     } else if (job->detail_page_pending) {
       text_layer_set_text(s_detail_footer_layer, job->detail_pending_request == CodexDetailRequestOlder ? "Loading older" : "Loading newer");
     } else {
-      text_layer_set_text(s_detail_footer_layer, "Tap/Select: reply");
+      text_layer_set_text(s_detail_footer_layer, "Select: reply");
     }
 #else
     text_layer_set_text(s_detail_footer_layer, "Reply unavailable");
@@ -985,13 +985,6 @@ static void prv_handle_main_touch_tap(int x, int y) {
   prv_select_click(s_menu_layer, &index, NULL);
 }
 
-static void prv_handle_detail_touch_tap(int x, int y) {
-  (void)x;
-  (void)y;
-
-  prv_detail_select_handler(NULL, NULL);
-}
-
 static void prv_touch_handler(const TouchEvent *event, void *context) {
   int dx;
   int dy;
@@ -1042,8 +1035,6 @@ static void prv_touch_handler(const TouchEvent *event, void *context) {
       if (detail_active) {
         if (prv_iabs(dx) > CODEX_TOUCH_SWIPE_MIN_PX && prv_iabs(dx) > prv_iabs(dy) && dx > 0) {
           window_stack_pop(true);
-        } else if (prv_iabs(dx) < CODEX_TOUCH_TAP_MAX_PX && prv_iabs(dy) < CODEX_TOUCH_TAP_MAX_PX) {
-          prv_handle_detail_touch_tap(s_touch_down_x, s_touch_down_y);
         } else if (!s_touch_dragged && prv_iabs(dy) > CODEX_TOUCH_SWIPE_MIN_PX) {
           prv_scroll_detail_by(dy);
         }
