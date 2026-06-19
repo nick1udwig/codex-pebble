@@ -65,6 +65,7 @@ var detailPollTimer = null;
 var detailPollAttempts = 0;
 var detailPollInFlight = false;
 var lastDetailBodyByThreadId = {};
+var pendingReplyTextByThreadId = {};
 
 Pebble.addEventListener("ready", function() {
   syncJobs({ reset: true });
@@ -292,7 +293,9 @@ function submitReply(payload) {
         input: input
       });
     }).then(function() {
-      sendStatus("Reply sent", SyncState.synced);
+      pendingReplyTextByThreadId[threadId] = text;
+      sendStatus("Reply sent", SyncState.syncing);
+      sendPendingReplyUpdate(threadId, text);
       return client.request("thread/read", {
         threadId: threadId,
         includeTurns: true
@@ -301,7 +304,7 @@ function submitReply(payload) {
   }).then(function(result) {
     var thread = result.thread || result;
     sendDetailUpdate(threadId, thread);
-    if (threadNeedsFollowup(thread))
+    if (detailNeedsFollowup(threadId, thread))
       scheduleDetailPoll(threadId, true);
     else
       syncJobs();
@@ -332,28 +335,31 @@ function runCodexRequest(label, callback) {
 }
 
 function sendDetailUpdate(threadId, thread) {
-  var body = threadBody(thread);
+  sendDetailBody(threadId, detailBody(threadId, thread), SyncState.synced);
+  reconcilePendingReply(threadId, thread);
+}
+
+function sendPendingReplyUpdate(threadId, text) {
+  sendDetailBody(threadId, appendPendingReply(lastDetailBodyByThreadId[threadId], text), SyncState.syncing);
+}
+
+function sendDetailBody(threadId, body, syncState) {
   lastDetailBodyByThreadId[threadId] = body;
   sendEnvelope(
     MessageType.detailUpdate,
     truncateUtf8([sanitizeField(threadId, ProtocolByteLimit.threadId), sanitizeBody(body, ProtocolByteLimit.body)].join("|"), ProtocolByteLimit.payload),
     0,
-    SyncState.synced
+    syncState
   );
 }
 
 function sendDetailUpdateIfChanged(threadId, thread) {
-  var body = threadBody(thread);
+  var body = detailBody(threadId, thread);
+  reconcilePendingReply(threadId, thread);
   if (lastDetailBodyByThreadId[threadId] === body)
     return false;
 
-  lastDetailBodyByThreadId[threadId] = body;
-  sendEnvelope(
-    MessageType.detailUpdate,
-    truncateUtf8([sanitizeField(threadId, ProtocolByteLimit.threadId), sanitizeBody(body, ProtocolByteLimit.body)].join("|"), ProtocolByteLimit.payload),
-    0,
-    SyncState.synced
-  );
+  sendDetailBody(threadId, body, SyncState.synced);
   return true;
 }
 
@@ -416,7 +422,7 @@ function pollThreadDetail(threadId) {
       return;
 
     sendDetailUpdateIfChanged(threadId, thread);
-    if (threadNeedsFollowup(thread))
+    if (detailNeedsFollowup(threadId, thread))
       scheduleDetailPoll(threadId, false);
     else
       syncJobs();
@@ -433,6 +439,142 @@ function pollThreadDetail(threadId) {
 function threadNeedsFollowup(thread) {
   var status = threadStatusText(thread);
   return status === "active" || status === "running" || Boolean(latestInProgressTurn(thread));
+}
+
+function detailNeedsFollowup(threadId, thread) {
+  return threadNeedsFollowup(thread) || Boolean(pendingReplyTextByThreadId[threadId]);
+}
+
+function detailBody(threadId, thread) {
+  var body = threadBody(thread);
+  var pendingText = pendingReplyTextByThreadId[threadId];
+
+  if (pendingText) {
+    if (!threadContainsUserText(thread, pendingText))
+      body = appendPendingReply(body, pendingText);
+    else if (!threadHasReplyResult(thread, pendingText) && !bodyContainsWorkingIndicator(body))
+      body = appendWithReservedSuffix(body, "Codex: working...");
+  } else if (threadNeedsFollowup(thread) && !bodyContainsWorkingIndicator(body)) {
+    body = appendWithReservedSuffix(body, "Codex: working...");
+  }
+
+  return body;
+}
+
+function appendPendingReply(body, text) {
+  var suffix = [];
+
+  if (!bodyContainsUserText(body, text))
+    suffix.push("You: " + text);
+  if (!bodyContainsWorkingIndicator(body))
+    suffix.push("Codex: working...");
+
+  if (!suffix.length)
+    return String(body || "");
+  return appendWithReservedSuffix(body, suffix.join("\n\n"));
+}
+
+function appendWithReservedSuffix(body, suffix) {
+  var base = String(body || "").trim();
+  var addition = String(suffix || "").trim();
+  var maxBaseBytes;
+
+  if (!addition)
+    return base;
+  if (!base || base === "No loaded messages yet")
+    return addition;
+
+  maxBaseBytes = ProtocolByteLimit.body - utf8ByteLength(addition) - 2;
+  if (maxBaseBytes <= 0)
+    return addition;
+
+  return truncateUtf8(base, maxBaseBytes).trim() + "\n\n" + addition;
+}
+
+function reconcilePendingReply(threadId, thread) {
+  var pendingText = pendingReplyTextByThreadId[threadId];
+  if (pendingText && threadHasReplyResult(thread, pendingText))
+    delete pendingReplyTextByThreadId[threadId];
+}
+
+function threadHasReplyResult(thread, text) {
+  var target = normalizeTextForMatch(text);
+  var turns = thread && Array.isArray(thread.turns) ? thread.turns : [];
+  var turnIndex;
+  var itemIndex;
+  var turn;
+  var item;
+  var itemText;
+  var foundUser;
+  var foundVisibleActivity;
+
+  if (!target)
+    return false;
+
+  for (turnIndex = 0; turnIndex < turns.length; turnIndex += 1) {
+    turn = turns[turnIndex] || {};
+    if (!Array.isArray(turn.items))
+      continue;
+
+    foundUser = false;
+    foundVisibleActivity = false;
+    for (itemIndex = 0; itemIndex < turn.items.length; itemIndex += 1) {
+      item = turn.items[itemIndex];
+      if (!item)
+        continue;
+
+      if (!foundUser && item.type === "userMessage") {
+        itemText = normalizeTextForMatch(userInputText(item.content));
+        foundUser = itemText === target || itemText.indexOf(target) !== -1;
+      } else if (foundUser && item.type !== "userMessage" && threadItemSummary(item)) {
+        foundVisibleActivity = true;
+      }
+    }
+
+    if (foundUser && (foundVisibleActivity || turn.status === "completed" || turn.status === "failed" || turn.status === "canceled"))
+      return true;
+  }
+
+  return false;
+}
+
+function threadContainsUserText(thread, text) {
+  var target = normalizeTextForMatch(text);
+  var turns = thread && Array.isArray(thread.turns) ? thread.turns : [];
+  var turnIndex;
+  var itemIndex;
+  var item;
+  var itemText;
+
+  if (!target)
+    return false;
+
+  for (turnIndex = 0; turnIndex < turns.length; turnIndex += 1) {
+    if (!Array.isArray(turns[turnIndex].items))
+      continue;
+    for (itemIndex = 0; itemIndex < turns[turnIndex].items.length; itemIndex += 1) {
+      item = turns[turnIndex].items[itemIndex];
+      if (!item || item.type !== "userMessage")
+        continue;
+      itemText = normalizeTextForMatch(userInputText(item.content));
+      if (itemText === target || itemText.indexOf(target) !== -1)
+        return true;
+    }
+  }
+
+  return false;
+}
+
+function bodyContainsUserText(body, text) {
+  return normalizeTextForMatch(body).indexOf("you: " + normalizeTextForMatch(text)) !== -1;
+}
+
+function bodyContainsWorkingIndicator(body) {
+  return normalizeTextForMatch(body).indexOf("codex: working") !== -1;
+}
+
+function normalizeTextForMatch(value) {
+  return String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 function threadBody(thread) {
@@ -634,6 +776,38 @@ function splitPayload(payload) {
   if (separator === -1)
     return [text, ""];
   return [text.slice(0, separator), text.slice(separator + 1)];
+}
+
+function utf8ByteLength(value) {
+  var text = String(value == null ? "" : value);
+  var length = 0;
+  var index;
+  var code;
+  var next;
+  var codeUnitLength;
+
+  for (index = 0; index < text.length; index += codeUnitLength) {
+    code = text.charCodeAt(index);
+    codeUnitLength = 1;
+
+    if (code <= 0x7F) {
+      length += 1;
+    } else if (code <= 0x7FF) {
+      length += 2;
+    } else if (code >= 0xD800 && code <= 0xDBFF && index + 1 < text.length) {
+      next = text.charCodeAt(index + 1);
+      if (next >= 0xDC00 && next <= 0xDFFF) {
+        codeUnitLength = 2;
+        length += 4;
+      } else {
+        length += 3;
+      }
+    } else {
+      length += 3;
+    }
+  }
+
+  return length;
 }
 
 function truncateUtf8(value, maxBytes) {
