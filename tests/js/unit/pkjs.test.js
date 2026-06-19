@@ -159,9 +159,11 @@ describe("native C PKJS bridge", () => {
     });
 
     const detail = lastMessageOfType(harness, "detail_update");
-    expect(detail[1]).toContain("thr_2|You: Can you add more tests?");
-    expect(detail[1]).toContain("Codex: Added the bridge tests.");
-    expect(detail[1]).not.toContain("notLoaded");
+    const parsed = detailPayload(detail);
+    expect(parsed.threadId).toBe("thr_2");
+    expect(parsed.body).toContain("You: Can you add more tests?");
+    expect(parsed.body).toContain("Codex: Added the bridge tests.");
+    expect(parsed.body).not.toContain("notLoaded");
   });
 
   it("starts a new turn for dictated replies on idle threads", async () => {
@@ -175,8 +177,10 @@ describe("native C PKJS bridge", () => {
 
     harness.listeners.appmessage({ payload: { 0: "reply", 1: "thr_2|please continue" } });
     const immediateDetail = lastMessageOfType(harness, "detail_update");
-    expect(immediateDetail[1]).toContain("thr_2|You: please continue");
-    expect(immediateDetail[1]).toContain("Codex: working");
+    const parsed = detailPayload(immediateDetail);
+    expect(parsed.threadId).toBe("thr_2");
+    expect(parsed.body).toContain("You: please continue");
+    expect(parsed.body).toContain("Codex: working");
 
     harness.webSockets[0].open();
 
@@ -306,10 +310,51 @@ describe("native C PKJS bridge", () => {
     harness.webSockets[0].open();
 
     await vi.waitFor(() => {
-      const detail = lastMessageOfType(harness, "detail_update");
-      expect(detail?.[1]).toContain("Codex: Latest useful response");
-      expect(detail?.[1]).not.toContain("OLD stale context");
+      const detail = detailPayload(lastMessageOfType(harness, "detail_update"));
+      expect(detail.body).toContain("Codex: Latest useful response");
+      expect(detail.body).not.toContain("OLD stale context");
+      expect(detail.hasPrev).toBe(true);
     });
+  });
+
+  it("streams adjacent cached thread detail pages on watch scroll", async () => {
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 2,
+        recentCompletionLookbackMinutes: 720,
+      }),
+    }, {
+      threadReadFixture(threadId) {
+        return longHistoryThreadFixture(threadId);
+      },
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "detail_request", 1: "thr_2" } });
+    harness.webSockets[0].open();
+
+    await vi.waitFor(() => {
+      const detail = detailPayload(lastMessageOfType(harness, "detail_update"));
+      expect(detail.body).toContain("Codex: Latest useful response");
+      expect(detail.hasPrev).toBe(true);
+      expect(detail.hasNext).toBe(false);
+      expect(detail.anchor).toBe("bottom");
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "detail_scroll", 1: "thr_2|older" } });
+    let older = detailPayload(lastMessageOfType(harness, "detail_update"));
+    expect(older.threadId).toBe("thr_2");
+    expect(older.body).toContain("OLD stale context");
+    expect(older.hasNext).toBe(true);
+    expect(older.anchor).toBe("bottom");
+
+    harness.listeners.appmessage({ payload: { 0: "detail_scroll", 1: "thr_2|newer" } });
+    const newer = detailPayload(lastMessageOfType(harness, "detail_update"));
+    expect(newer.body).toContain("Codex: Latest useful response");
+    expect(newer.body).not.toContain("OLD stale context");
+    expect(newer.hasPrev).toBe(true);
+    expect(newer.hasNext).toBe(false);
+    expect(newer.anchor).toBe("top");
   });
 
   it("polls thread detail after a dictated reply until the Codex result is visible", async () => {
@@ -493,6 +538,17 @@ describe("native C PKJS bridge", () => {
 
 function lastMessageOfType(harness, type) {
   return harness.sentMessages.filter(message => message[0] === type).at(-1);
+}
+
+function detailPayload(message) {
+  const parts = String(message?.[1] || "").split("|");
+  return {
+    threadId: parts[0],
+    anchor: parts[1],
+    hasPrev: parts[2] === "1",
+    hasNext: parts[3] === "1",
+    body: parts.slice(4).join("|"),
+  };
 }
 
 function loadPkjs(initialStorage = {}, options = {}) {

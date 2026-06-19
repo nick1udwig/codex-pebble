@@ -11,10 +11,11 @@
 #define CODEX_TITLE_LENGTH 48
 #define CODEX_DETAIL_LENGTH 96
 #define CODEX_BODY_LENGTH 640
+#define CODEX_THREAD_BODY_LENGTH 16384
 #define CODEX_DETAIL_PAYLOAD_LENGTH 768
 #define CODEX_REPLY_LENGTH 256
 #define CODEX_STATUS_LENGTH 64
-#define CODEX_DETAIL_TEXT_MEASURE_HEIGHT 1600
+#define CODEX_DETAIL_TEXT_MEASURE_HEIGHT 24000
 #define CODEX_DETAIL_TEXT_PADDING 4
 #define CODEX_READY_INITIAL_DELAY_MS 300
 #define CODEX_READY_RETRY_DELAY_MS 1000
@@ -27,6 +28,7 @@
 #define CODEX_MSG_LOAD_MORE "load_more"
 #define CODEX_MSG_OPEN_CONFIG "open_config"
 #define CODEX_MSG_DETAIL_REQUEST "detail_request"
+#define CODEX_MSG_DETAIL_SCROLL "detail_scroll"
 #define CODEX_MSG_REPLY "reply"
 #define CODEX_MSG_SETTINGS_STATE "settings_state"
 #define CODEX_MSG_SYNC_STATUS "sync_status"
@@ -42,6 +44,24 @@ typedef enum {
   CodexSyncSynced = 2,
 } CodexSyncState;
 
+typedef enum {
+  CodexDetailAnchorBottom = 0,
+  CodexDetailAnchorTop = 1,
+  CodexDetailAnchorKeep = 2,
+} CodexDetailAnchor;
+
+typedef enum {
+  CodexDetailMergeReplace = 0,
+  CodexDetailMergePrepend = 1,
+  CodexDetailMergeAppend = 2,
+} CodexDetailMerge;
+
+typedef enum {
+  CodexDetailRequestNone = 0,
+  CodexDetailRequestOlder = 1,
+  CodexDetailRequestNewer = 2,
+} CodexDetailRequest;
+
 typedef struct {
   char id[CODEX_ID_LENGTH];
   char kind[16];
@@ -50,6 +70,11 @@ typedef struct {
   char body[CODEX_BODY_LENGTH];
   bool has_detail;
   bool loading_detail;
+  bool detail_has_prev;
+  bool detail_has_next;
+  bool detail_page_pending;
+  CodexDetailRequest detail_pending_request;
+  CodexDetailAnchor detail_anchor;
 } CodexJob;
 
 static Window *s_main_window;
@@ -66,6 +91,10 @@ static DictationSession *s_dictation_session;
 
 static CodexJob s_jobs[CODEX_MAX_JOBS];
 static char s_detail_payload_buffer[CODEX_DETAIL_PAYLOAD_LENGTH];
+static char s_thread_body[CODEX_THREAD_BODY_LENGTH];
+static char s_thread_body_merge_buffer[CODEX_THREAD_BODY_LENGTH];
+static char s_thread_body_id[CODEX_ID_LENGTH];
+static bool s_thread_body_loaded;
 static size_t s_job_count;
 static int s_selected_job = -1;
 static char s_selected_job_id[CODEX_ID_LENGTH];
@@ -87,10 +116,14 @@ static void prv_copy_string(char *dest, size_t dest_size, const char *src);
 static CodexJob *prv_find_job_by_id(const char *id);
 static CodexJob *prv_get_selected_job(void);
 static void prv_update_detail_layers(void);
-static void prv_update_detail_scroll(bool scroll_to_bottom);
+static void prv_update_detail_scroll(CodexDetailAnchor anchor);
 static void prv_detail_click_config_provider(void *context);
 static void prv_schedule_ready_timer(uint32_t delay_ms);
 static void prv_touch_handler(const TouchEvent *event, void *context);
+static bool prv_is_detail_anchor(const char *value);
+static void prv_prepare_detail_load(CodexJob *job);
+static const char *prv_selected_detail_text(CodexJob *job);
+static void prv_apply_detail_text(CodexJob *job, const char *body, CodexDetailMerge merge, CodexDetailAnchor anchor);
 
 static void prv_copy_string(char *dest, size_t dest_size, const char *src) {
   if (!dest || dest_size == 0) {
@@ -124,6 +157,20 @@ static bool prv_string_is_truthy(const char *value) {
   return value && value[0] == '1';
 }
 
+static bool prv_is_detail_anchor(const char *value) {
+  return value && (strcmp(value, "top") == 0 || strcmp(value, "bottom") == 0 || strcmp(value, "keep") == 0);
+}
+
+static CodexDetailAnchor prv_parse_detail_anchor(const char *value) {
+  if (value && strcmp(value, "top") == 0) {
+    return CodexDetailAnchorTop;
+  }
+  if (value && strcmp(value, "keep") == 0) {
+    return CodexDetailAnchorKeep;
+  }
+  return CodexDetailAnchorBottom;
+}
+
 static int prv_iabs(int value) {
   return value < 0 ? -value : value;
 }
@@ -145,6 +192,140 @@ static void prv_copy_payload_field(char *dest, size_t dest_size, const char *src
     dest[index] = (c == '|' || c == '\n' || c == '\r') ? ' ' : c;
   }
   dest[index] = '\0';
+}
+
+static void prv_copy_thread_body(const char *text) {
+  prv_copy_string(s_thread_body, sizeof(s_thread_body), text && text[0] ? text : "No thread content");
+  s_thread_body_loaded = true;
+}
+
+static void prv_prepare_detail_load(CodexJob *job) {
+  if (!job) {
+    return;
+  }
+
+  job->loading_detail = true;
+  job->detail_page_pending = false;
+  job->detail_pending_request = CodexDetailRequestNone;
+  prv_copy_string(job->body, sizeof(job->body), "Loading thread...");
+  prv_copy_string(s_thread_body_id, sizeof(s_thread_body_id), job->id);
+  s_thread_body[0] = '\0';
+  s_thread_body_loaded = false;
+}
+
+static void prv_join_thread_body(const char *first, const char *second) {
+  first = first ? first : "";
+  second = second ? second : "";
+  if (first[0] && second[0]) {
+    snprintf(s_thread_body_merge_buffer, sizeof(s_thread_body_merge_buffer), "%s\n\n%s", first, second);
+  } else {
+    snprintf(s_thread_body_merge_buffer, sizeof(s_thread_body_merge_buffer), "%s%s", first, second);
+  }
+  prv_copy_thread_body(s_thread_body_merge_buffer);
+}
+
+static const char *prv_selected_detail_text(CodexJob *job) {
+  if (job && job->has_detail && s_thread_body_loaded && strcmp(job->id, s_thread_body_id) == 0) {
+    return s_thread_body;
+  }
+  if (job && job->has_detail) {
+    return job->body;
+  }
+  return job ? job->detail : "No details";
+}
+
+static int prv_clamp_detail_offset(int offset_y) {
+  Layer *scroll_layer;
+  GRect bounds;
+  GSize content_size;
+  int min_y;
+
+  if (!s_detail_scroll_layer) {
+    return offset_y;
+  }
+
+  scroll_layer = scroll_layer_get_layer(s_detail_scroll_layer);
+  bounds = layer_get_bounds(scroll_layer);
+  content_size = scroll_layer_get_content_size(s_detail_scroll_layer);
+  min_y = bounds.size.h - content_size.h;
+  if (min_y > 0) {
+    min_y = 0;
+  }
+  if (offset_y > 0) {
+    return 0;
+  }
+  if (offset_y < min_y) {
+    return min_y;
+  }
+  return offset_y;
+}
+
+static void prv_apply_detail_text(CodexJob *job, const char *body, CodexDetailMerge merge, CodexDetailAnchor anchor) {
+  const char *safe_body = body ? body : "";
+  GPoint old_offset = GPointZero;
+  GSize old_content_size = GSize(0, 0);
+  GSize new_content_size;
+  int next_offset_y;
+  bool can_preserve_offset = s_detail_scroll_layer && s_detail_body_layer && job && job->has_detail &&
+                             s_thread_body_loaded && strcmp(job->id, s_thread_body_id) == 0;
+  bool hide_until_positioned = s_detail_body_layer && (!can_preserve_offset || merge == CodexDetailMergeReplace);
+
+  if (!job) {
+    return;
+  }
+
+  prv_copy_string(s_thread_body_id, sizeof(s_thread_body_id), job->id);
+  if (!can_preserve_offset || merge == CodexDetailMergeReplace || !s_thread_body[0]) {
+    prv_copy_thread_body(safe_body);
+  } else if (merge == CodexDetailMergePrepend) {
+    if (safe_body[0] && strstr(s_thread_body, safe_body) == s_thread_body) {
+      merge = CodexDetailMergeReplace;
+    } else {
+      old_offset = scroll_layer_get_content_offset(s_detail_scroll_layer);
+      old_content_size = scroll_layer_get_content_size(s_detail_scroll_layer);
+      prv_join_thread_body(safe_body, s_thread_body);
+    }
+  } else {
+    if (safe_body[0] && strstr(s_thread_body, safe_body)) {
+      merge = CodexDetailMergeReplace;
+    } else {
+      old_offset = scroll_layer_get_content_offset(s_detail_scroll_layer);
+      old_content_size = scroll_layer_get_content_size(s_detail_scroll_layer);
+      prv_join_thread_body(s_thread_body, safe_body);
+    }
+  }
+
+  prv_copy_string(job->body, sizeof(job->body), safe_body[0] ? safe_body : "No thread content");
+  job->has_detail = true;
+  job->loading_detail = false;
+
+  if (!s_detail_body_layer) {
+    return;
+  }
+
+  if (hide_until_positioned) {
+    layer_set_hidden(text_layer_get_layer(s_detail_body_layer), true);
+  }
+  text_layer_set_text(s_detail_body_layer, s_thread_body);
+  prv_update_detail_scroll(can_preserve_offset ? CodexDetailAnchorKeep : anchor);
+
+  if (!can_preserve_offset || merge == CodexDetailMergeReplace) {
+    if (hide_until_positioned) {
+      layer_set_hidden(text_layer_get_layer(s_detail_body_layer), false);
+    }
+    return;
+  }
+
+  new_content_size = scroll_layer_get_content_size(s_detail_scroll_layer);
+  if (merge == CodexDetailMergePrepend) {
+    next_offset_y = old_offset.y - (new_content_size.h - old_content_size.h);
+  } else {
+    next_offset_y = old_offset.y;
+  }
+  scroll_layer_set_content_offset(s_detail_scroll_layer, GPoint(0, prv_clamp_detail_offset(next_offset_y)), false);
+  if (hide_until_positioned) {
+    layer_set_hidden(text_layer_get_layer(s_detail_body_layer), false);
+  }
 }
 
 static void prv_set_status(const char *status, CodexSyncState sync_state) {
@@ -206,6 +387,11 @@ static void prv_handle_job_item(const char *payload) {
   prv_copy_string(job->body, sizeof(job->body), job->detail);
   job->has_detail = false;
   job->loading_detail = false;
+  job->detail_has_prev = false;
+  job->detail_has_next = false;
+  job->detail_page_pending = false;
+  job->detail_pending_request = CodexDetailRequestNone;
+  job->detail_anchor = CodexDetailAnchorBottom;
   if (s_selected_job_id[0] && strcmp(job->id, s_selected_job_id) == 0) {
     s_selected_job = (int)(s_job_count - 1);
   }
@@ -235,33 +421,78 @@ static void prv_handle_job_complete(const char *payload) {
 static void prv_handle_detail_update(const char *payload) {
   char *cursor = s_detail_payload_buffer;
   const char *id;
+  const char *anchor_or_body;
+  const char *has_prev;
+  const char *has_next;
   const char *body;
   CodexJob *job;
+  bool page_has_prev = false;
+  bool page_has_next = false;
+  CodexDetailAnchor page_anchor = CodexDetailAnchorBottom;
+  CodexDetailMerge merge = CodexDetailMergeReplace;
 
   prv_copy_string(s_detail_payload_buffer, sizeof(s_detail_payload_buffer), payload);
   id = prv_next_field(&cursor);
-  body = prv_next_field(&cursor);
+  anchor_or_body = prv_next_field(&cursor);
   job = prv_find_job_by_id(id);
   if (!job) {
     return;
   }
 
-  prv_copy_string(job->body, sizeof(job->body), body[0] ? body : "No thread content");
-  job->has_detail = true;
-  job->loading_detail = false;
-  prv_update_detail_layers();
+  if (prv_is_detail_anchor(anchor_or_body)) {
+    has_prev = prv_next_field(&cursor);
+    has_next = prv_next_field(&cursor);
+    body = prv_next_field(&cursor);
+    page_anchor = prv_parse_detail_anchor(anchor_or_body);
+    page_has_prev = prv_string_is_truthy(has_prev);
+    page_has_next = prv_string_is_truthy(has_next);
+  } else {
+    body = anchor_or_body;
+  }
+
+  if (job->detail_page_pending && job->detail_pending_request == CodexDetailRequestOlder) {
+    merge = CodexDetailMergePrepend;
+    job->detail_anchor = CodexDetailAnchorKeep;
+    job->detail_has_prev = page_has_prev;
+  } else if (job->detail_page_pending && job->detail_pending_request == CodexDetailRequestNewer) {
+    merge = CodexDetailMergeAppend;
+    job->detail_anchor = CodexDetailAnchorKeep;
+    job->detail_has_next = page_has_next;
+  } else {
+    merge = CodexDetailMergeReplace;
+    job->detail_anchor = page_anchor;
+    job->detail_has_prev = page_has_prev;
+    job->detail_has_next = page_has_next;
+  }
+
+  prv_apply_detail_text(job, body, merge, page_anchor);
+  job->detail_page_pending = false;
+  job->detail_pending_request = CodexDetailRequestNone;
+  if (s_detail_footer_layer) {
+    text_layer_set_text(s_detail_footer_layer, "Tap/Select: reply");
+  }
 }
 
-static void prv_request_selected_detail(void) {
-  CodexJob *job = prv_get_selected_job();
-  if (!job) {
+static void prv_request_detail_page(CodexJob *job, const char *direction) {
+  char payload[CODEX_ID_LENGTH + 12];
+
+  if (!job || !direction || job->detail_page_pending) {
+    return;
+  }
+  if (strcmp(direction, "older") == 0 && !job->detail_has_prev) {
+    return;
+  }
+  if (strcmp(direction, "newer") == 0 && !job->detail_has_next) {
     return;
   }
 
-  job->loading_detail = true;
-  prv_copy_string(job->body, sizeof(job->body), "Loading thread...");
-  prv_update_detail_layers();
-  prv_send_message(CODEX_MSG_DETAIL_REQUEST, job->id);
+  snprintf(payload, sizeof(payload), "%s|%s", job->id, direction);
+  job->detail_page_pending = true;
+  job->detail_pending_request = strcmp(direction, "older") == 0 ? CodexDetailRequestOlder : CodexDetailRequestNewer;
+  if (s_detail_footer_layer) {
+    text_layer_set_text(s_detail_footer_layer, strcmp(direction, "older") == 0 ? "Loading older" : "Loading newer");
+  }
+  prv_send_message(CODEX_MSG_DETAIL_SCROLL, payload);
 }
 
 static void prv_inbox_received(DictionaryIterator *iter, void *context) {
@@ -307,6 +538,11 @@ static void prv_inbox_dropped(AppMessageResult reason, void *context) {
 }
 
 static void prv_outbox_failed(DictionaryIterator *iter, AppMessageResult reason, void *context) {
+  CodexJob *job = prv_get_selected_job();
+  if (job) {
+    job->detail_page_pending = false;
+    job->detail_pending_request = CodexDetailRequestNone;
+  }
   prv_set_status("Phone link not ready", CodexSyncDesynced);
   prv_reload_menu();
 }
@@ -395,29 +631,41 @@ static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
 
 static void prv_update_detail_layers(void) {
   CodexJob *job = prv_get_selected_job();
-  bool scroll_to_bottom = false;
+  CodexDetailAnchor anchor = CodexDetailAnchorKeep;
 
   if (s_detail_body_layer) {
     if (!job) {
+      layer_set_hidden(text_layer_get_layer(s_detail_body_layer), false);
       text_layer_set_text(s_detail_body_layer, "No details");
     } else if (job->loading_detail) {
-      text_layer_set_text(s_detail_body_layer, "Loading thread...");
+      text_layer_set_text(s_detail_body_layer, "");
+      layer_set_hidden(text_layer_get_layer(s_detail_body_layer), true);
+      anchor = CodexDetailAnchorTop;
     } else {
-      text_layer_set_text(s_detail_body_layer, job->has_detail ? job->body : job->detail);
-      scroll_to_bottom = job->has_detail;
+      layer_set_hidden(text_layer_get_layer(s_detail_body_layer), false);
+      text_layer_set_text(s_detail_body_layer, prv_selected_detail_text(job));
+      anchor = job->has_detail ? job->detail_anchor : CodexDetailAnchorTop;
     }
   }
-  prv_update_detail_scroll(scroll_to_bottom);
+  prv_update_detail_scroll(anchor);
   if (s_detail_footer_layer) {
 #if defined(PBL_MICROPHONE)
-    text_layer_set_text(s_detail_footer_layer, job ? "Tap/Select: reply" : "");
+    if (!job) {
+      text_layer_set_text(s_detail_footer_layer, "");
+    } else if (job->loading_detail) {
+      text_layer_set_text(s_detail_footer_layer, "Loading thread");
+    } else if (job->detail_page_pending) {
+      text_layer_set_text(s_detail_footer_layer, job->detail_pending_request == CodexDetailRequestOlder ? "Loading older" : "Loading newer");
+    } else {
+      text_layer_set_text(s_detail_footer_layer, "Tap/Select: reply");
+    }
 #else
     text_layer_set_text(s_detail_footer_layer, "Reply unavailable");
 #endif
   }
 }
 
-static void prv_update_detail_scroll(bool scroll_to_bottom) {
+static void prv_update_detail_scroll(CodexDetailAnchor anchor) {
   Layer *body_layer;
   Layer *scroll_layer;
   GRect scroll_bounds;
@@ -449,12 +697,14 @@ static void prv_update_detail_scroll(bool scroll_to_bottom) {
   layer_set_frame(body_layer, body_frame);
   scroll_layer_set_content_size(s_detail_scroll_layer, GSize(scroll_bounds.size.w, content_height));
 
-  if (scroll_to_bottom) {
+  if (anchor == CodexDetailAnchorBottom) {
     bottom_offset = content_height - scroll_bounds.size.h;
     if (bottom_offset < 0) {
       bottom_offset = 0;
     }
     scroll_layer_set_content_offset(s_detail_scroll_layer, GPoint(0, -bottom_offset), false);
+  } else if (anchor == CodexDetailAnchorTop) {
+    scroll_layer_set_content_offset(s_detail_scroll_layer, GPointZero, false);
   }
 }
 
@@ -463,6 +713,7 @@ static void prv_scroll_detail_by(int dy) {
   GRect bounds;
   GSize content_size;
   GPoint offset;
+  CodexJob *job;
   int min_y;
   int next_y;
 
@@ -480,10 +731,17 @@ static void prv_scroll_detail_by(int dy) {
 
   offset = scroll_layer_get_content_offset(s_detail_scroll_layer);
   next_y = offset.y + dy;
+  job = prv_get_selected_job();
   if (next_y > 0) {
     next_y = 0;
+    if (dy > 0) {
+      prv_request_detail_page(job, "older");
+    }
   } else if (next_y < min_y) {
     next_y = min_y;
+    if (dy < 0) {
+      prv_request_detail_page(job, "newer");
+    }
   }
 
   scroll_layer_set_content_offset(s_detail_scroll_layer, GPoint(0, next_y), false);
@@ -601,8 +859,22 @@ static void prv_detail_select_handler(ClickRecognizerRef recognizer, void *conte
 #endif
 }
 
+static void prv_detail_up_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  prv_scroll_detail_by(42);
+}
+
+static void prv_detail_down_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  prv_scroll_detail_by(-42);
+}
+
 static void prv_detail_click_config_provider(void *context) {
   (void)context;
+  window_single_click_subscribe(BUTTON_ID_UP, prv_detail_up_handler);
+  window_single_click_subscribe(BUTTON_ID_DOWN, prv_detail_down_handler);
   window_single_click_subscribe(BUTTON_ID_SELECT, prv_detail_select_handler);
 }
 
@@ -631,6 +903,7 @@ static void prv_select_click(MenuLayer *menu_layer, MenuIndex *cell_index, void 
 
   s_selected_job = cell_index->row;
   prv_copy_string(s_selected_job_id, sizeof(s_selected_job_id), s_jobs[s_selected_job].id);
+  prv_prepare_detail_load(&s_jobs[s_selected_job]);
   if (!s_detail_window) {
     s_detail_window = window_create();
     window_set_window_handlers(s_detail_window, (WindowHandlers){
@@ -639,7 +912,7 @@ static void prv_select_click(MenuLayer *menu_layer, MenuIndex *cell_index, void 
     });
   }
   window_stack_push(s_detail_window, true);
-  prv_request_selected_detail();
+  prv_send_message(CODEX_MSG_DETAIL_REQUEST, s_selected_job_id);
 }
 
 static bool prv_menu_index_from_touch(int x, int y, MenuIndex *index) {
