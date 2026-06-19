@@ -149,8 +149,11 @@ describe("native C PKJS bridge", () => {
     });
 
     const methods = harness.webSockets[0].sentJson.map(message => message.method);
-    expect(methods).toEqual(["initialize", "initialized", "thread/read"]);
+    expect(methods).toEqual(["initialize", "initialized", "thread/resume", "thread/read"]);
     expect(harness.webSockets[0].sentJson[2].params).toEqual({
+      threadId: "thr_2",
+    });
+    expect(harness.webSockets[0].sentJson[3].params).toEqual({
       threadId: "thr_2",
       includeTurns: true,
     });
@@ -357,6 +360,77 @@ describe("native C PKJS bridge", () => {
     expect(harness.logs.some(line => line.includes("WebSocket close: type=close code=1006 reason=abnormal wasClean=false"))).toBe(true);
     expect(harness.logs.some(line => line.includes("Sync failed: WebSocket closed: type=close code=1006 reason=abnormal wasClean=false"))).toBe(true);
   });
+
+  it("renders live app-server notifications on the active thread", async () => {
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 2,
+        recentCompletionLookbackMinutes: 720,
+      }),
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "detail_request", 1: "thr_2" } });
+    harness.webSockets[0].open();
+    await vi.waitFor(() => expect(lastMessageOfType(harness, "detail_update")).toBeTruthy());
+
+    harness.webSockets[0].notify("turn/started", {
+      threadId: "thr_2",
+      turn: { id: "turn_live", status: "inProgress", items: [] },
+    });
+    await vi.waitFor(() => {
+      expect(lastMessageOfType(harness, "detail_update")?.[1]).toContain("Codex: working");
+    });
+
+    harness.webSockets[0].notify("item/agentMessage/delta", {
+      threadId: "thr_2",
+      turnId: "turn_live",
+      itemId: "item_live",
+      delta: "Streaming",
+    });
+    harness.webSockets[0].notify("item/agentMessage/delta", {
+      threadId: "thr_2",
+      turnId: "turn_live",
+      itemId: "item_live",
+      delta: " response",
+    });
+
+    await vi.waitFor(() => {
+      expect(lastMessageOfType(harness, "detail_update")?.[1]).toContain("Codex: Streaming response");
+    });
+  });
+
+  it("refreshes final thread content when a live turn completes", async () => {
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 2,
+        recentCompletionLookbackMinutes: 720,
+      }),
+    }, {
+      threadReadFixture(threadId, readCount) {
+        if (threadId !== "thr_2")
+          return threadReadFixture(threadId);
+        if (readCount < 2)
+          return activeReplyThreadFixture(threadId);
+        return completedThreadFixture(threadId, "Live completion arrived.");
+      },
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "detail_request", 1: "thr_2" } });
+    harness.webSockets[0].open();
+    await vi.waitFor(() => expect(harness.threadReadCounts.thr_2).toBe(1));
+
+    harness.webSockets[0].notify("turn/completed", {
+      threadId: "thr_2",
+      turn: completedThreadFixture("thr_2", "Live completion arrived.").turns[0],
+    });
+
+    await vi.waitFor(() => {
+      expect(harness.threadReadCounts.thr_2).toBe(2);
+      expect(lastMessageOfType(harness, "detail_update")?.[1]).toContain("Codex: Live completion arrived.");
+    });
+  });
 });
 
 function lastMessageOfType(harness, type) {
@@ -410,6 +484,10 @@ function loadPkjs(initialStorage = {}, options = {}) {
       this.onopen();
     }
 
+    notify(method, params = {}) {
+      this.onmessage({ data: JSON.stringify({ method, params }) });
+    }
+
     send(raw) {
       const message = JSON.parse(raw);
       this.sentJson.push(message);
@@ -424,6 +502,23 @@ function loadPkjs(initialStorage = {}, options = {}) {
             nextCursor: limit < threads.length ? "next-page" : null,
             backwardsCursor: "prev-page",
           },
+        }) });
+      } else if (message.method === "thread/resume") {
+        const threadId = message.params.threadId;
+        this.onmessage({ data: JSON.stringify({
+          id: message.id,
+          result: {
+            thread: options.threadResumeFixture
+              ? options.threadResumeFixture(threadId)
+              : options.threadReadFixture
+                ? options.threadReadFixture(threadId, 0)
+                : threadReadFixture(threadId),
+          },
+        }) });
+      } else if (message.method === "thread/unsubscribe") {
+        this.onmessage({ data: JSON.stringify({
+          id: message.id,
+          result: { status: "unsubscribed" },
         }) });
       } else if (message.method === "thread/read") {
         const threadId = message.params.threadId;
