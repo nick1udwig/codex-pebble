@@ -56,7 +56,14 @@
       "SyncState": 3
     },
     "resources": {
-      "media": []
+      "media": [
+        {
+          "name": "APP_ICON",
+          "type": "bitmap",
+          "file": "codex-jobs-menu-icon.png",
+          "menuIcon": true
+        }
+      ]
     }
   }
 }

@@ -1,5 +1,11 @@
 # Publishing Notes
 
+## App Icon
+
+The source icon is [`assets/codex-jobs-icon.svg`](../assets/codex-jobs-icon.svg), imported from `~/git/iconography/icons/50px_Terminal.svg`.
+
+Use [`assets/codex-jobs-icon.png`](../assets/codex-jobs-icon.png) as the app store submission icon. The watch app menu icon is generated as [`resources/codex-jobs-menu-icon.png`](../resources/codex-jobs-menu-icon.png) and referenced from `package.json`.
+
 ## Public Config Page
 
 The Pebble config page for published builds is served from:
