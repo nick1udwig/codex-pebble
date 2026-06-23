@@ -16,7 +16,7 @@ export function parseEmbeddedSettings(search = globalThis.location?.search ?? ""
   try {
     const params = new URLSearchParams(search);
     const raw = params.get("settings") ?? params.get("state");
-    return raw ? sanitizeSettings(JSON.parse(decodeURIComponent(raw))) : {};
+    return raw ? sanitizeSettings(JSON.parse(raw)) : {};
   } catch (_error) {
     return {};
   }
@@ -89,7 +89,11 @@ function getReturnToUrl(search = globalThis.location?.search ?? "") {
 }
 
 function appendClosePayload(returnTo, payload) {
-  const separator = returnTo.includes("?") ? "" : "?";
+  let separator = "?";
+  if (returnTo.endsWith("?") || returnTo.endsWith("&"))
+    separator = "";
+  else if (returnTo.includes("?"))
+    separator = "&";
   return returnTo + separator + encodeURIComponent(JSON.stringify(payload));
 }
 

@@ -39,6 +39,18 @@ test("loads embedded settings and submits sanitized settings", async ({ page }) 
   });
 });
 
+test("preserves percent-encoded characters in embedded websocket URLs", async ({ page }) => {
+  const settings = encodeURIComponent(JSON.stringify({
+    wsUrl: "ws://codex-relay.tailnet-name.ts.net:4501/%7Ecodex?token=a%2Fb",
+    displayLimit: 4,
+  }));
+
+  await page.goto(`/?settings=${settings}`);
+
+  await expect(page.locator("#wsUrl")).toHaveValue("ws://codex-relay.tailnet-name.ts.net:4501/%7Ecodex?token=a%2Fb");
+  await expect(page.locator("#displayLimit")).toHaveValue("4");
+});
+
 test("rejects non-websocket URLs without closing", async ({ page }) => {
   await page.goto("/");
 
@@ -88,6 +100,38 @@ test("shows a warning when settings save locally but bridge submit fails", async
     wsUrl: "ws://codex-relay.tailnet-name.ts.net:4501",
     displayLimit: 4,
   });
+
+  await page.close();
+});
+
+test("appends emulator return_to payload after existing query params", async ({ browser }) => {
+  const page = await browser.newPage();
+  const returnTo = "http://localhost:12345/close?existing=1";
+  const settings = encodeURIComponent(JSON.stringify({
+    wsUrl: "",
+    displayLimit: 3,
+  }));
+  let callbackUrl = "";
+
+  await page.route(/http:\/\/localhost:12345\/close\?.*/, async route => {
+    callbackUrl = route.request().url();
+    await route.fulfill({ status: 200, body: "OK" });
+  });
+
+  await page.goto(`/?settings=${settings}&return_to=${encodeURIComponent(returnTo)}`);
+  await page.fill("#wsUrl", "ws://127.0.0.1:4501");
+  await page.fill("#displayLimit", "3");
+
+  await Promise.all([
+    page.waitForURL(url => url.href.startsWith(returnTo + "&")),
+    page.click("#save-settings"),
+  ]);
+
+  expect(callbackUrl).toContain("existing=1&");
+  expect(decodeURIComponent(callbackUrl.slice((returnTo + "&").length))).toBe(JSON.stringify({
+    wsUrl: "ws://127.0.0.1:4501",
+    displayLimit: 3,
+  }));
 
   await page.close();
 });
