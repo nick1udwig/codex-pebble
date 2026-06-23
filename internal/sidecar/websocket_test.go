@@ -29,6 +29,21 @@ func TestReadMessageRejectsOversizedControlFrame(t *testing.T) {
 	}
 }
 
+func TestReadMessageRejectsReservedBits(t *testing.T) {
+	ws := &WebSocketConn{
+		reader:     bufio.NewReader(bytes.NewReader([]byte{0xC1, 0x00})),
+		expectMask: false,
+	}
+
+	_, _, err := ws.ReadMessage()
+	if err == nil {
+		t.Fatal("expected frame with RSV bits to fail")
+	}
+	if !strings.Contains(err.Error(), "reserved bits") {
+		t.Fatalf("error = %v, want reserved bits error", err)
+	}
+}
+
 func TestDialUnixWebSocketDoesNotSendOrigin(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix sockets are not available on Windows")

@@ -271,6 +271,9 @@ func (c *WebSocketConn) readFrame() (wsFrame, error) {
 
 	first := header[0]
 	second := header[1]
+	if first&0x70 != 0 {
+		return wsFrame{}, errors.New("websocket frame has reserved bits set")
+	}
 	fin := first&0x80 != 0
 	opcode := first & 0x0f
 	isControl := opcode >= OpcodeClose
