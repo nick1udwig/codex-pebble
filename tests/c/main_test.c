@@ -102,10 +102,34 @@ static void test_append_existing_suffix_is_not_duplicated(void) {
   expect_string("append existing suffix", s_thread_body, "Older page\n\nNewest page");
 }
 
+static void test_append_overflow_keeps_newest_page(void) {
+  ScrollLayer scroll_layer;
+  TextLayer text_layer;
+  CodexJob job;
+
+  reset_watch_state();
+  install_detail_layers(&scroll_layer, &text_layer);
+  memset(&job, 0, sizeof(job));
+  prv_copy_string(job.id, sizeof(job.id), "thread-1");
+  job.has_detail = true;
+  prv_copy_string(s_thread_body_id, sizeof(s_thread_body_id), job.id);
+  memset(s_thread_body, 'A', sizeof(s_thread_body) - 1);
+  s_thread_body[sizeof(s_thread_body) - 1] = '\0';
+  s_thread_body_loaded = true;
+
+  prv_apply_detail_text(&job, "Newest page", CodexDetailMergeAppend, CodexDetailAnchorBottom);
+
+  if (!strstr(s_thread_body, "Newest page")) {
+    fprintf(stderr, "FAIL append overflow keeps newest page: newest page missing\n");
+    s_failures += 1;
+  }
+}
+
 int main(void) {
   test_copy_payload_field_sanitizes_separators();
   test_append_repeated_detail_page_is_not_dropped();
   test_append_existing_suffix_is_not_duplicated();
+  test_append_overflow_keeps_newest_page();
 
   if (s_failures) {
     return EXIT_FAILURE;

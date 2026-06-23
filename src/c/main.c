@@ -313,6 +313,59 @@ static void prv_join_thread_body(const char *first, const char *second) {
   prv_copy_thread_body(s_thread_body_merge_buffer);
 }
 
+static const char *prv_tail_start_for_bytes(const char *text, size_t max_bytes) {
+  size_t length;
+  const char *start;
+  const char *boundary;
+
+  text = text ? text : "";
+  length = strlen(text);
+  if (length <= max_bytes) {
+    return text;
+  }
+
+  start = text + length - max_bytes;
+  boundary = strstr(start, "\n\n");
+  if (boundary && boundary[2]) {
+    return boundary + 2;
+  }
+  return start;
+}
+
+static void prv_append_thread_body(const char *body, const char *suffix) {
+  size_t suffix_length;
+  size_t max_prefix_bytes;
+  size_t prefix_length;
+  const char *prefix_start;
+
+  body = body ? body : "";
+  suffix = suffix ? suffix : "";
+  if (!body[0] || !suffix[0]) {
+    prv_join_thread_body(body, suffix);
+    return;
+  }
+
+  suffix_length = strlen(suffix);
+  if (suffix_length + 2 >= sizeof(s_thread_body_merge_buffer)) {
+    prv_copy_thread_body(suffix);
+    return;
+  }
+
+  max_prefix_bytes = sizeof(s_thread_body_merge_buffer) - suffix_length - 3;
+  prefix_start = prv_tail_start_for_bytes(body, max_prefix_bytes);
+  prefix_length = strlen(prefix_start);
+  if (prefix_length > max_prefix_bytes) {
+    prefix_start += prefix_length - max_prefix_bytes;
+    prefix_length = max_prefix_bytes;
+  }
+  memcpy(s_thread_body_merge_buffer, prefix_start, prefix_length);
+  s_thread_body_merge_buffer[prefix_length] = '\n';
+  s_thread_body_merge_buffer[prefix_length + 1] = '\n';
+  memcpy(s_thread_body_merge_buffer + prefix_length + 2, suffix, suffix_length);
+  s_thread_body_merge_buffer[prefix_length + 2 + suffix_length] = '\0';
+  prv_copy_thread_body(s_thread_body_merge_buffer);
+}
+
 static bool prv_thread_body_has_page_prefix(const char *body, const char *page) {
   size_t page_length;
 
@@ -416,7 +469,7 @@ static void prv_apply_detail_text(CodexJob *job, const char *body, CodexDetailMe
     } else {
       old_offset = scroll_layer_get_content_offset(s_detail_scroll_layer);
       old_content_size = scroll_layer_get_content_size(s_detail_scroll_layer);
-      prv_join_thread_body(s_thread_body, safe_body);
+      prv_append_thread_body(s_thread_body, safe_body);
     }
   }
 
