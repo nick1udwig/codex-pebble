@@ -294,12 +294,18 @@ func (c *WebSocketConn) readFrame() (wsFrame, error) {
 			return wsFrame{}, err
 		}
 		length = uint64(binary.BigEndian.Uint16(extended[:]))
+		if length < 126 {
+			return wsFrame{}, errors.New("websocket frame has non-minimal payload length")
+		}
 	case 127:
 		var extended [8]byte
 		if _, err := io.ReadFull(c.reader, extended[:]); err != nil {
 			return wsFrame{}, err
 		}
 		length = binary.BigEndian.Uint64(extended[:])
+		if length <= 0xffff {
+			return wsFrame{}, errors.New("websocket frame has non-minimal payload length")
+		}
 		if length > maxMessageBytes {
 			return wsFrame{}, errors.New("websocket frame too large")
 		}

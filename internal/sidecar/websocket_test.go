@@ -44,6 +44,39 @@ func TestReadMessageRejectsReservedBits(t *testing.T) {
 	}
 }
 
+func TestReadMessageRejectsNonMinimalPayloadLengths(t *testing.T) {
+	tests := []struct {
+		name  string
+		frame []byte
+	}{
+		{
+			name:  "sixteen-bit length for small payload",
+			frame: []byte{0x81, 126, 0, 125},
+		},
+		{
+			name:  "sixty-four-bit length for sixteen-bit payload",
+			frame: []byte{0x81, 127, 0, 0, 0, 0, 0, 0, 0, 126},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ws := &WebSocketConn{
+				reader:     bufio.NewReader(bytes.NewReader(tt.frame)),
+				expectMask: false,
+			}
+
+			_, _, err := ws.ReadMessage()
+			if err == nil {
+				t.Fatal("expected frame with non-minimal length to fail")
+			}
+			if !strings.Contains(err.Error(), "non-minimal") {
+				t.Fatalf("error = %v, want non-minimal length error", err)
+			}
+		})
+	}
+}
+
 func TestDialUnixWebSocketDoesNotSendOrigin(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix sockets are not available on Windows")
