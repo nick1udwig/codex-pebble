@@ -2,6 +2,7 @@ package sidecar
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -10,6 +11,23 @@ import (
 	"testing"
 	"time"
 )
+
+func TestReadMessageRejectsOversizedControlFrame(t *testing.T) {
+	payload := bytes.Repeat([]byte("x"), 126)
+	frame := append([]byte{0x88, 126, 0, byte(len(payload))}, payload...)
+	ws := &WebSocketConn{
+		reader:     bufio.NewReader(bytes.NewReader(frame)),
+		expectMask: false,
+	}
+
+	_, _, err := ws.ReadMessage()
+	if err == nil {
+		t.Fatal("expected oversized close control frame to fail")
+	}
+	if !strings.Contains(err.Error(), "control frame payload too large") {
+		t.Fatalf("error = %v, want control frame payload error", err)
+	}
+}
 
 func TestDialUnixWebSocketDoesNotSendOrigin(t *testing.T) {
 	if runtime.GOOS == "windows" {

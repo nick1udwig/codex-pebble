@@ -273,6 +273,7 @@ func (c *WebSocketConn) readFrame() (wsFrame, error) {
 	second := header[1]
 	fin := first&0x80 != 0
 	opcode := first & 0x0f
+	isControl := opcode >= OpcodeClose
 	masked := second&0x80 != 0
 	length := uint64(second & 0x7f)
 
@@ -298,6 +299,14 @@ func (c *WebSocketConn) readFrame() (wsFrame, error) {
 		length = binary.BigEndian.Uint64(extended[:])
 		if length > maxMessageBytes {
 			return wsFrame{}, errors.New("websocket frame too large")
+		}
+	}
+	if isControl {
+		if !fin {
+			return wsFrame{}, errors.New("websocket control frame fragmented")
+		}
+		if length > 125 {
+			return wsFrame{}, errors.New("websocket control frame payload too large")
 		}
 	}
 
