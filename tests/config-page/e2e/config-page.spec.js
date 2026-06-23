@@ -15,6 +15,14 @@ test.beforeEach(async ({ page }) => {
   await installBridge(page);
 });
 
+test("describes the WebSocket URL as the sidecar endpoint", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.locator("label[for='wsUrl']")).toHaveText("Codex sidecar WebSocket URL");
+  await expect(page.locator(".hint")).toContainText("Use the sidecar URL");
+  await expect(page.locator(".hint")).not.toContainText("origin relay");
+});
+
 test("loads embedded settings and submits sanitized settings", async ({ page }) => {
   const settings = encodeURIComponent(JSON.stringify({
     wsUrl: " ws://codex-relay.tailnet-name.ts.net:4501 ",
