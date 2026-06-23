@@ -39,4 +39,9 @@ describe("publication metadata", () => {
   it("uses the Rebble terminal SVG as the source app icon", () => {
     expect(iconSvg.trim()).toBe(terminalIconSvg.trim());
   });
+
+  it("advertises the Go sidecar as the development relay path", () => {
+    expect(packageJson.scripts["dev:sidecar"]).toBe("go run ./cmd/codex-pebble-sidecar");
+    expect(packageJson.scripts).not.toHaveProperty("dev:relay");
+  });
 });
