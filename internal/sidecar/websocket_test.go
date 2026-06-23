@@ -117,6 +117,69 @@ func TestAcceptWebSocketRejectsInvalidKey(t *testing.T) {
 	}
 }
 
+func TestDialTCPWebSocketRejectsMalformedUpgradeResponse(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		defer conn.Close()
+
+		reader := bufio.NewReader(conn)
+		headers := map[string]string{}
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				serverErr <- err
+				return
+			}
+			line = strings.TrimRight(line, "\r\n")
+			if line == "" {
+				break
+			}
+			if separator := strings.IndexByte(line, ':'); separator != -1 {
+				headers[strings.ToLower(line[:separator])] = strings.TrimSpace(line[separator+1:])
+			}
+		}
+
+		key := headers["sec-websocket-key"]
+		if key == "" {
+			serverErr <- fmt.Errorf("missing Sec-WebSocket-Key")
+			return
+		}
+		_, err = fmt.Fprintf(conn, "HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: %s\r\n\r\n", webSocketAccept(key))
+		serverErr <- err
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ws, err := DialTCPWebSocket(ctx, listener.Addr().String(), "/", nil)
+	if err == nil {
+		_ = ws.Close()
+		t.Fatal("expected malformed upgrade response to fail")
+	}
+	if !strings.Contains(err.Error(), "invalid websocket upgrade response") {
+		t.Fatalf("error = %v, want invalid upgrade response", err)
+	}
+
+	select {
+	case err := <-serverErr:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for malformed handshake response")
+	}
+}
+
 func TestDialUnixWebSocketDoesNotSendOrigin(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix sockets are not available on Windows")

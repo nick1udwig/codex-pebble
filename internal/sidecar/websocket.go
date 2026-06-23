@@ -158,6 +158,11 @@ func clientHandshakeWithHeaders(ctx context.Context, conn net.Conn, host, reques
 		_ = conn.Close()
 		return nil, fmt.Errorf("websocket upgrade failed: %s", status)
 	}
+	if !strings.EqualFold(responseHeaders.Get("Upgrade"), "websocket") ||
+		!headerContains(responseHeaders.Values("Connection"), "upgrade") {
+		_ = conn.Close()
+		return nil, errors.New("invalid websocket upgrade response")
+	}
 	if responseHeaders.Get("Sec-WebSocket-Accept") != webSocketAccept(key) {
 		_ = conn.Close()
 		return nil, errors.New("websocket upgrade returned invalid Sec-WebSocket-Accept")
