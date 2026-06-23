@@ -38,9 +38,14 @@ type WebSocketConn struct {
 
 func AcceptWebSocket(w http.ResponseWriter, r *http.Request) (*WebSocketConn, error) {
 	key := strings.TrimSpace(r.Header.Get("Sec-WebSocket-Key"))
+	keyBytes, err := base64.StdEncoding.DecodeString(key)
 	if key == "" {
 		http.Error(w, "missing Sec-WebSocket-Key", http.StatusBadRequest)
 		return nil, errors.New("missing Sec-WebSocket-Key")
+	}
+	if err != nil || len(keyBytes) != 16 {
+		http.Error(w, "invalid Sec-WebSocket-Key", http.StatusBadRequest)
+		return nil, errors.New("invalid Sec-WebSocket-Key")
 	}
 	if strings.TrimSpace(r.Header.Get("Sec-WebSocket-Version")) != "13" {
 		http.Error(w, "unsupported WebSocket version", http.StatusBadRequest)

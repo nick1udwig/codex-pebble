@@ -5,7 +5,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"strings"
 	"testing"
@@ -74,6 +77,43 @@ func TestReadMessageRejectsNonMinimalPayloadLengths(t *testing.T) {
 				t.Fatalf("error = %v, want non-minimal length error", err)
 			}
 		})
+	}
+}
+
+func TestAcceptWebSocketRejectsInvalidKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := AcceptWebSocket(w, r)
+		if err == nil {
+			_ = ws.Close()
+			t.Error("AcceptWebSocket accepted invalid Sec-WebSocket-Key")
+		}
+	}))
+	defer server.Close()
+
+	addr := strings.TrimPrefix(server.URL, "http://")
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	_, err = io.WriteString(conn, "GET / HTTP/1.1\r\n"+
+		"Host: "+addr+"\r\n"+
+		"Upgrade: websocket\r\n"+
+		"Connection: Upgrade\r\n"+
+		"Sec-WebSocket-Key: not-base64\r\n"+
+		"Sec-WebSocket-Version: 13\r\n"+
+		"\r\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(status, "400") {
+		t.Fatalf("status = %q, want HTTP 400", strings.TrimSpace(status))
 	}
 }
 
