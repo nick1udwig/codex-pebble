@@ -9,9 +9,10 @@
   ],
   "private": true,
   "scripts": {
-    "test": "npm run test:js && npm run test:config && npm run test:sidecar",
+    "test": "npm run test:js && npm run test:config && npm run test:c && npm run test:sidecar",
     "test:js": "bash scripts/test-js.sh",
     "test:config": "bash scripts/test-config.sh",
+    "test:c": "bash scripts/test-c.sh",
     "test:sidecar": "go test ./...",
     "test:build": "bash scripts/test-build.sh",
     "test:pre-release": "bash scripts/test-pre-release.sh",

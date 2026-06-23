@@ -313,6 +313,42 @@ static void prv_join_thread_body(const char *first, const char *second) {
   prv_copy_thread_body(s_thread_body_merge_buffer);
 }
 
+static bool prv_thread_body_has_page_prefix(const char *body, const char *page) {
+  size_t page_length;
+
+  if (!body || !page || !page[0]) {
+    return false;
+  }
+
+  page_length = strlen(page);
+  if (strncmp(body, page, page_length) != 0) {
+    return false;
+  }
+  return body[page_length] == '\0' || (body[page_length] == '\n' && body[page_length + 1] == '\n');
+}
+
+static bool prv_thread_body_has_page_suffix(const char *body, const char *page) {
+  size_t body_length;
+  size_t page_length;
+  size_t start;
+
+  if (!body || !page || !page[0]) {
+    return false;
+  }
+
+  body_length = strlen(body);
+  page_length = strlen(page);
+  if (page_length > body_length) {
+    return false;
+  }
+
+  start = body_length - page_length;
+  if (strcmp(body + start, page) != 0) {
+    return false;
+  }
+  return start == 0 || (start >= 2 && body[start - 2] == '\n' && body[start - 1] == '\n');
+}
+
 static const char *prv_selected_detail_text(CodexJob *job) {
   if (job && job->has_detail && s_thread_body_loaded && strcmp(job->id, s_thread_body_id) == 0) {
     return s_thread_body;
@@ -367,7 +403,7 @@ static void prv_apply_detail_text(CodexJob *job, const char *body, CodexDetailMe
   if (!can_preserve_offset || merge == CodexDetailMergeReplace || !s_thread_body[0]) {
     prv_copy_thread_body(safe_body);
   } else if (merge == CodexDetailMergePrepend) {
-    if (safe_body[0] && strstr(s_thread_body, safe_body) == s_thread_body) {
+    if (prv_thread_body_has_page_prefix(s_thread_body, safe_body)) {
       merge = CodexDetailMergeReplace;
     } else {
       old_offset = scroll_layer_get_content_offset(s_detail_scroll_layer);
@@ -375,7 +411,7 @@ static void prv_apply_detail_text(CodexJob *job, const char *body, CodexDetailMe
       prv_join_thread_body(safe_body, s_thread_body);
     }
   } else {
-    if (safe_body[0] && strstr(s_thread_body, safe_body)) {
+    if (prv_thread_body_has_page_suffix(s_thread_body, safe_body)) {
       merge = CodexDetailMergeReplace;
     } else {
       old_offset = scroll_layer_get_content_offset(s_detail_scroll_layer);
@@ -1352,4 +1388,5 @@ int main(void) {
   prv_init();
   app_event_loop();
   prv_deinit();
+  return 0;
 }
