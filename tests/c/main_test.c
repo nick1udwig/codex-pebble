@@ -19,7 +19,6 @@ static void reset_watch_state(void) {
   memset(s_jobs, 0, sizeof(s_jobs));
   memset(s_detail_payload_buffer, 0, sizeof(s_detail_payload_buffer));
   memset(s_thread_body, 0, sizeof(s_thread_body));
-  memset(s_thread_body_merge_buffer, 0, sizeof(s_thread_body_merge_buffer));
   memset(s_thread_body_id, 0, sizeof(s_thread_body_id));
   memset(s_last_reply_thread_id, 0, sizeof(s_last_reply_thread_id));
   memset(s_last_reply_text, 0, sizeof(s_last_reply_text));
@@ -102,6 +101,42 @@ static void test_append_existing_suffix_is_not_duplicated(void) {
   expect_string("append existing suffix", s_thread_body, "Older page\n\nNewest page");
 }
 
+static void test_prepend_detail_page_preserves_order(void) {
+  ScrollLayer scroll_layer;
+  TextLayer text_layer;
+  CodexJob job;
+
+  reset_watch_state();
+  install_detail_layers(&scroll_layer, &text_layer);
+  memset(&job, 0, sizeof(job));
+  prv_copy_string(job.id, sizeof(job.id), "thread-1");
+  job.has_detail = true;
+  prv_copy_string(s_thread_body_id, sizeof(s_thread_body_id), job.id);
+  prv_copy_thread_body("Middle page\n\nNewest page");
+
+  prv_apply_detail_text(&job, "Older page", CodexDetailMergePrepend, CodexDetailAnchorBottom);
+
+  expect_string("prepend detail page", s_thread_body, "Older page\n\nMiddle page\n\nNewest page");
+}
+
+static void test_prepend_existing_prefix_is_not_duplicated(void) {
+  ScrollLayer scroll_layer;
+  TextLayer text_layer;
+  CodexJob job;
+
+  reset_watch_state();
+  install_detail_layers(&scroll_layer, &text_layer);
+  memset(&job, 0, sizeof(job));
+  prv_copy_string(job.id, sizeof(job.id), "thread-1");
+  job.has_detail = true;
+  prv_copy_string(s_thread_body_id, sizeof(s_thread_body_id), job.id);
+  prv_copy_thread_body("Older page\n\nMiddle page");
+
+  prv_apply_detail_text(&job, "Older page", CodexDetailMergePrepend, CodexDetailAnchorBottom);
+
+  expect_string("prepend existing prefix", s_thread_body, "Older page\n\nMiddle page");
+}
+
 static void test_append_overflow_keeps_newest_page(void) {
   ScrollLayer scroll_layer;
   TextLayer text_layer;
@@ -129,6 +164,8 @@ int main(void) {
   test_copy_payload_field_sanitizes_separators();
   test_append_repeated_detail_page_is_not_dropped();
   test_append_existing_suffix_is_not_duplicated();
+  test_prepend_detail_page_preserves_order();
+  test_prepend_existing_prefix_is_not_duplicated();
   test_append_overflow_keeps_newest_page();
 
   if (s_failures) {

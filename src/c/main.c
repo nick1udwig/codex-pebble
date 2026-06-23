@@ -95,7 +95,6 @@ static DictationSession *s_dictation_session;
 static CodexJob s_jobs[CODEX_MAX_JOBS];
 static char s_detail_payload_buffer[CODEX_DETAIL_PAYLOAD_LENGTH];
 static char s_thread_body[CODEX_THREAD_BODY_LENGTH];
-static char s_thread_body_merge_buffer[CODEX_THREAD_BODY_LENGTH];
 static char s_thread_body_id[CODEX_ID_LENGTH];
 static char s_last_reply_thread_id[CODEX_ID_LENGTH];
 static char s_last_reply_text[CODEX_REPLY_LENGTH];
@@ -302,17 +301,6 @@ static void prv_mark_reply_retry_available(void) {
   }
 }
 
-static void prv_join_thread_body(const char *first, const char *second) {
-  first = first ? first : "";
-  second = second ? second : "";
-  if (first[0] && second[0]) {
-    snprintf(s_thread_body_merge_buffer, sizeof(s_thread_body_merge_buffer), "%s\n\n%s", first, second);
-  } else {
-    snprintf(s_thread_body_merge_buffer, sizeof(s_thread_body_merge_buffer), "%s%s", first, second);
-  }
-  prv_copy_thread_body(s_thread_body_merge_buffer);
-}
-
 static const char *prv_tail_start_for_bytes(const char *text, size_t max_bytes) {
   size_t length;
   const char *start;
@@ -332,6 +320,40 @@ static const char *prv_tail_start_for_bytes(const char *text, size_t max_bytes) 
   return start;
 }
 
+static void prv_prepend_thread_body(const char *prefix, const char *body) {
+  size_t prefix_length;
+  size_t body_length;
+  size_t copy_body_length;
+  size_t max_body_bytes;
+
+  prefix = prefix ? prefix : "";
+  body = body ? body : "";
+  if (!prefix[0]) {
+    prv_copy_thread_body(body);
+    return;
+  }
+  if (!body[0]) {
+    prv_copy_thread_body(prefix);
+    return;
+  }
+
+  prefix_length = strlen(prefix);
+  if (prefix_length + 2 >= sizeof(s_thread_body)) {
+    prv_copy_thread_body(prefix);
+    return;
+  }
+
+  max_body_bytes = sizeof(s_thread_body) - prefix_length - 3;
+  body_length = strlen(body);
+  copy_body_length = body_length < max_body_bytes ? body_length : max_body_bytes;
+  memmove(s_thread_body + prefix_length + 2, body, copy_body_length);
+  memcpy(s_thread_body, prefix, prefix_length);
+  s_thread_body[prefix_length] = '\n';
+  s_thread_body[prefix_length + 1] = '\n';
+  s_thread_body[prefix_length + 2 + copy_body_length] = '\0';
+  s_thread_body_loaded = true;
+}
+
 static void prv_append_thread_body(const char *body, const char *suffix) {
   size_t suffix_length;
   size_t max_prefix_bytes;
@@ -340,30 +362,34 @@ static void prv_append_thread_body(const char *body, const char *suffix) {
 
   body = body ? body : "";
   suffix = suffix ? suffix : "";
-  if (!body[0] || !suffix[0]) {
-    prv_join_thread_body(body, suffix);
+  if (!body[0]) {
+    prv_copy_thread_body(suffix);
+    return;
+  }
+  if (!suffix[0]) {
+    prv_copy_thread_body(body);
     return;
   }
 
   suffix_length = strlen(suffix);
-  if (suffix_length + 2 >= sizeof(s_thread_body_merge_buffer)) {
+  if (suffix_length + 2 >= sizeof(s_thread_body)) {
     prv_copy_thread_body(suffix);
     return;
   }
 
-  max_prefix_bytes = sizeof(s_thread_body_merge_buffer) - suffix_length - 3;
+  max_prefix_bytes = sizeof(s_thread_body) - suffix_length - 3;
   prefix_start = prv_tail_start_for_bytes(body, max_prefix_bytes);
   prefix_length = strlen(prefix_start);
   if (prefix_length > max_prefix_bytes) {
     prefix_start += prefix_length - max_prefix_bytes;
     prefix_length = max_prefix_bytes;
   }
-  memcpy(s_thread_body_merge_buffer, prefix_start, prefix_length);
-  s_thread_body_merge_buffer[prefix_length] = '\n';
-  s_thread_body_merge_buffer[prefix_length + 1] = '\n';
-  memcpy(s_thread_body_merge_buffer + prefix_length + 2, suffix, suffix_length);
-  s_thread_body_merge_buffer[prefix_length + 2 + suffix_length] = '\0';
-  prv_copy_thread_body(s_thread_body_merge_buffer);
+  memmove(s_thread_body, prefix_start, prefix_length);
+  s_thread_body[prefix_length] = '\n';
+  s_thread_body[prefix_length + 1] = '\n';
+  memcpy(s_thread_body + prefix_length + 2, suffix, suffix_length);
+  s_thread_body[prefix_length + 2 + suffix_length] = '\0';
+  s_thread_body_loaded = true;
 }
 
 static bool prv_thread_body_has_page_prefix(const char *body, const char *page) {
@@ -461,7 +487,7 @@ static void prv_apply_detail_text(CodexJob *job, const char *body, CodexDetailMe
     } else {
       old_offset = scroll_layer_get_content_offset(s_detail_scroll_layer);
       old_content_size = scroll_layer_get_content_size(s_detail_scroll_layer);
-      prv_join_thread_body(safe_body, s_thread_body);
+      prv_prepend_thread_body(safe_body, s_thread_body);
     }
   } else {
     if (prv_thread_body_has_page_suffix(s_thread_body, safe_body)) {
