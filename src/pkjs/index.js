@@ -504,7 +504,9 @@ function summarizeThreadIds(threads) {
 
 function basename(path) {
   var text = String(path || "");
-  var parts = text.split("/");
+  var parts;
+  text = text.replace(/[\\/]+$/, "");
+  parts = text.split(/[\\/]/);
   return parts[parts.length - 1] || text;
 }
 

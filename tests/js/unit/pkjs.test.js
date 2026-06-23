@@ -217,6 +217,30 @@ describe("native C PKJS bridge", () => {
     expect(details[0]).toContain("Review the current code changes");
   });
 
+  it("uses the project basename for Windows cwd values", async () => {
+    const harness = loadPkjs({
+      codexJobsSettings: JSON.stringify({
+        wsUrl: "ws://127.0.0.1:4501",
+        displayLimit: 1,
+      }),
+    }, {
+      threads: [{
+        id: "win_1",
+        name: "Windows thread",
+        preview: "Review Windows path formatting",
+        status: { type: "idle" },
+        source: "cli",
+        cwd: "C:\\Users\\nick\\projects\\codex-pebble",
+      }],
+    });
+
+    harness.listeners.appmessage({ payload: { 0: "app_ready" } });
+    harness.webSockets[0].open();
+
+    await vi.waitFor(() => expect(lastMessageOfType(harness, "job_complete")?.[1]).toBe("1|0"));
+    expect(lastMessageOfType(harness, "job_item")?.[1]).toContain("win_1|idle|codex-pebble  idle|");
+  });
+
   it("loads thread detail with thread/read and emits readable content", async () => {
     const harness = loadPkjs({
       codexJobsSettings: JSON.stringify({
