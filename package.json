@@ -16,6 +16,7 @@
     "test:sidecar": "go test ./...",
     "test:build": "bash scripts/test-build.sh",
     "test:pre-release": "bash scripts/test-pre-release.sh",
+    "sync:appinfo": "node scripts/sync-appinfo.mjs",
     "smoke:app-server": "node scripts/smoke-app-server.mjs",
     "dev:sidecar": "go run ./cmd/codex-pebble-sidecar",
     "build:sidecar": "go build -o build/codex-pebble-sidecar ./cmd/codex-pebble-sidecar",
@@ -27,7 +28,8 @@
     "build:watch:release": "npm run build:watch && node scripts/build-release-pbw.mjs",
     "deploy:phone": "bash scripts/build-and-install-phone.sh",
     "schemas:ts": "codex app-server generate-ts --out ./schemas",
-    "schemas:json": "codex app-server generate-json-schema --out ./schemas"
+    "schemas:json": "codex app-server generate-json-schema --out ./schemas",
+    "version": "npm run sync:appinfo"
   },
   "dependencies": {},
   "devDependencies": {

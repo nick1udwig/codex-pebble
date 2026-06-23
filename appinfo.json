@@ -1,0 +1,35 @@
+{
+  "uuid": "e1a19869-91bd-42c4-ab84-6301e44e25c7",
+  "shortName": "Codex Jobs",
+  "longName": "Codex Jobs",
+  "companyName": "Nick",
+  "versionLabel": "0.1.2",
+  "sdkVersion": "3",
+  "projectType": "native",
+  "watchapp": {
+    "watchface": false
+  },
+  "capabilities": [
+    "configurable"
+  ],
+  "targetPlatforms": [
+    "emery",
+    "gabbro"
+  ],
+  "appKeys": {
+    "MessageType": 0,
+    "Payload": 1,
+    "RequestId": 2,
+    "SyncState": 3
+  },
+  "resources": {
+    "media": [
+      {
+        "name": "APP_ICON",
+        "type": "bitmap",
+        "file": "codex-jobs-menu-icon.png",
+        "menuIcon": true
+      }
+    ]
+  }
+}

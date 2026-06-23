@@ -123,7 +123,7 @@ jobs:
 
       - name: Commit version bump and tag
         run: |
-          git add package.json package-lock.json
+          git add package.json package-lock.json appinfo.json
           git commit -m "Release ${{ steps.version.outputs.tag }}"
           git tag -a "${{ steps.version.outputs.tag }}" -m "${{ steps.version.outputs.tag }}"
           git push origin "HEAD:${GITHUB_REF_NAME}"

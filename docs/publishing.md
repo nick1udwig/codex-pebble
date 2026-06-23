@@ -36,6 +36,16 @@ The release script minifies `pebble-js-app.js`, removes the source map from the 
 build/codex-pebble-release.pbw
 ```
 
+Tracked Pebble publication metadata lives in [`appinfo.json`](../appinfo.json).
+It is generated from `package.json` with:
+
+```sh
+npm run sync:appinfo
+```
+
+The `npm version` lifecycle runs that sync automatically so release version
+bumps keep `versionLabel` aligned with `package.json`.
+
 ## Sidecar Binaries
 
 Build release archives for the Go sidecar with:

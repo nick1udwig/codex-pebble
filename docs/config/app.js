@@ -3,19 +3,12 @@ const STORAGE_KEY = "codex_jobs:config_state";
 const DEFAULT_SETTINGS = Object.freeze({
   wsUrl: "",
   displayLimit: 3,
-  recentCompletionLookbackMinutes: 720,
 });
 
 export function sanitizeSettings(settings = {}) {
   return {
     wsUrl: String(settings.wsUrl ?? "").trim(),
     displayLimit: clamp(settings.displayLimit, 1, 8, DEFAULT_SETTINGS.displayLimit),
-    recentCompletionLookbackMinutes: clamp(
-      settings.recentCompletionLookbackMinutes,
-      5,
-      10080,
-      DEFAULT_SETTINGS.recentCompletionLookbackMinutes,
-    ),
   };
 }
 
@@ -23,7 +16,7 @@ export function parseEmbeddedSettings(search = globalThis.location?.search ?? ""
   try {
     const params = new URLSearchParams(search);
     const raw = params.get("settings") ?? params.get("state");
-    return raw ? sanitizeSettings(JSON.parse(decodeURIComponent(raw))) : {};
+    return raw ? sanitizeSettings(JSON.parse(raw)) : {};
   } catch (_error) {
     return {};
   }
@@ -53,7 +46,12 @@ function saveSettings(settings) {
 
 function getBridge() {
   if (globalThis.PebbleConfigBridge && typeof globalThis.PebbleConfigBridge.submit === "function") {
-    return globalThis.PebbleConfigBridge;
+    return {
+      submit(payload) {
+        globalThis.PebbleConfigBridge.submit(payload);
+        return true;
+      },
+    };
   }
 
   const returnTo = getReturnToUrl();
@@ -62,20 +60,24 @@ function getBridge() {
       submit(payload) {
         try {
           globalThis.location.href = appendClosePayload(returnTo, payload);
+          return true;
         } catch (_error) {
+          return false;
         }
       },
     };
   }
 
   return {
-    submit(payload) {
-      try {
-        globalThis.location.href = "pebblejs://close#" + encodeURIComponent(JSON.stringify(payload));
-      } catch (_error) {
-      }
-    },
-  };
+      submit(payload) {
+        try {
+          globalThis.location.href = "pebblejs://close#" + encodeURIComponent(JSON.stringify(payload));
+          return true;
+        } catch (_error) {
+          return false;
+        }
+      },
+    };
 }
 
 function getReturnToUrl(search = globalThis.location?.search ?? "") {
@@ -87,7 +89,11 @@ function getReturnToUrl(search = globalThis.location?.search ?? "") {
 }
 
 function appendClosePayload(returnTo, payload) {
-  const separator = returnTo.includes("?") ? "" : "?";
+  let separator = "?";
+  if (returnTo.endsWith("?") || returnTo.endsWith("&"))
+    separator = "";
+  else if (returnTo.includes("?"))
+    separator = "&";
   return returnTo + separator + encodeURIComponent(JSON.stringify(payload));
 }
 
@@ -95,14 +101,12 @@ function readFormSettings() {
   return sanitizeSettings({
     wsUrl: document.querySelector("#wsUrl").value,
     displayLimit: document.querySelector("#displayLimit").value,
-    recentCompletionLookbackMinutes: document.querySelector("#recentCompletionLookbackMinutes").value,
   });
 }
 
 function writeFormSettings(settings) {
   document.querySelector("#wsUrl").value = settings.wsUrl;
   document.querySelector("#displayLimit").value = String(settings.displayLimit);
-  document.querySelector("#recentCompletionLookbackMinutes").value = String(settings.recentCompletionLookbackMinutes);
 }
 
 function setStatus(message, kind = "info") {
@@ -134,8 +138,15 @@ function bootstrap() {
     }
 
     saveSettings(nextSettings);
-    getBridge().submit(nextSettings);
-    setStatus("Closing to save settings.", "success");
+    try {
+      if (getBridge().submit(nextSettings)) {
+        setStatus("Closing to save settings.", "success");
+      } else {
+        setStatus("Settings saved locally, but watch was not notified.", "error");
+      }
+    } catch (_error) {
+      setStatus("Settings saved locally, but watch was not notified.", "error");
+    }
   });
 }
 
