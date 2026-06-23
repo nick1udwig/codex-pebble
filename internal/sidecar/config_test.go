@@ -32,15 +32,19 @@ func TestNeedsGeneratedTokenForNonLoopbackListenAddr(t *testing.T) {
 	}{
 		{"127.0.0.1:4501", false},
 		{"localhost:4501", false},
+		{"LOCALHOST:4501", false},
 		{"[::1]:4501", false},
+		{":4501", true},
 		{"0.0.0.0:4501", true},
 		{"192.168.1.10:4501", true},
 	}
 
 	for _, tt := range tests {
-		cfg := Config{ListenAddr: tt.addr}
-		if got := cfg.NeedsGeneratedToken(); got != tt.want {
-			t.Fatalf("NeedsGeneratedToken(%q) = %v, want %v", tt.addr, got, tt.want)
-		}
+		t.Run(tt.addr, func(t *testing.T) {
+			cfg := Config{ListenAddr: tt.addr}
+			if got := cfg.NeedsGeneratedToken(); got != tt.want {
+				t.Fatalf("NeedsGeneratedToken(%q) = %v, want %v", tt.addr, got, tt.want)
+			}
+		})
 	}
 }
