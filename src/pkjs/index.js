@@ -2025,7 +2025,13 @@ JsonRpcClient.prototype.request = function(method, params) {
       reject(new Error(method + " timed out"));
     }, 15000);
     self.pending[id] = { resolve: resolve, reject: reject, timer: timer };
-    self.send(message);
+    try {
+      self.send(message);
+    } catch (error) {
+      clearTimeout(timer);
+      delete self.pending[id];
+      reject(error);
+    }
   });
 };
 
@@ -2043,6 +2049,7 @@ JsonRpcClient.prototype.send = function(message) {
 JsonRpcClient.prototype.handleMessage = function(raw) {
   var message;
   var pending;
+  var hasResult;
   try {
     message = JSON.parse(raw);
   } catch (error) {
@@ -2069,10 +2076,11 @@ JsonRpcClient.prototype.handleMessage = function(raw) {
 
   delete this.pending[message.id];
   clearTimeout(pending.timer);
+  hasResult = Object.prototype.hasOwnProperty.call(message, "result");
   if (message.error)
     pending.reject(new Error(message.error.message || "JSON-RPC request failed"));
   else
-    pending.resolve(message.result || {});
+    pending.resolve(hasResult ? message.result : {});
 };
 
 JsonRpcClient.prototype.rejectAll = function(error) {

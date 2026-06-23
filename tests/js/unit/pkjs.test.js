@@ -609,6 +609,35 @@ describe("native C PKJS bridge", () => {
     await expectFailedConnectionMessage("Handshake status 502 Bad Gateway upstream connect failed", "Codex app-server unavailable");
   });
 
+  it("does not retain pending JSON-RPC requests when send throws", async () => {
+    const harness = loadPkjs();
+    const client = new harness.exports.JsonRpcClient("ws://127.0.0.1:4501");
+
+    try {
+      await expect(client.request("thread/list", {})).rejects.toThrow("WebSocket is not open");
+      expect(Object.keys(client.pending)).toEqual([]);
+    } finally {
+      client.close();
+    }
+  });
+
+  it("preserves falsy JSON-RPC result values", async () => {
+    const harness = loadPkjs();
+    const client = new harness.exports.JsonRpcClient("ws://127.0.0.1:4501");
+    let sent;
+    client.ws = {
+      readyState: 1,
+      send(raw) {
+        sent = JSON.parse(raw);
+      },
+    };
+
+    const request = client.request("feature/enabled", {});
+    client.handleMessage(JSON.stringify({ id: sent.id, result: false }));
+
+    await expect(request).resolves.toBe(false);
+  });
+
   it("renders live app-server notifications on the active thread", async () => {
     const harness = loadPkjs({
       codexJobsSettings: JSON.stringify({
@@ -937,6 +966,7 @@ function loadPkjs(initialStorage = {}, options = {}) {
   vm.runInContext(SOURCE, context, { filename: "src/pkjs/index.js" });
 
   return {
+    exports: module.exports,
     listeners,
     localStorage,
     logs,
