@@ -149,7 +149,8 @@ func (s *Server) authorized(r *http.Request) bool {
 }
 
 func isWebSocketRequest(r *http.Request) bool {
-	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket") &&
+	return r.Method == http.MethodGet &&
+		strings.EqualFold(r.Header.Get("Upgrade"), "websocket") &&
 		headerContains(r.Header.Values("Connection"), "upgrade")
 }
 

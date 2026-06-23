@@ -82,6 +82,16 @@ func TestServerRejectsMissingToken(t *testing.T) {
 	}
 }
 
+func TestIsWebSocketRequestRequiresGet(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/", nil)
+	request.Header.Set("Upgrade", "websocket")
+	request.Header.Set("Connection", "Upgrade")
+
+	if isWebSocketRequest(request) {
+		t.Fatal("POST request with upgrade headers should not be treated as a WebSocket request")
+	}
+}
+
 func TestReadyzReportsUpstreamStatus(t *testing.T) {
 	t.Run("ready", func(t *testing.T) {
 		upstream := newFakeUpstream()
